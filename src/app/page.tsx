@@ -5,6 +5,7 @@ import Particles, { initParticlesEngine } from "@tsparticles/react";
 import { loadFull } from "tsparticles";
 import { Typewriter } from "react-simple-typewriter";
 import { motion, useInView } from "framer-motion";
+import { useRouter } from "next/navigation";
 import { FaGithub, FaSteam, FaFire, FaTags, FaLayerGroup } from "react-icons/fa";
 
 /* ---------- Small Counter component (animated on scroll) ---------- */
@@ -24,7 +25,7 @@ function Counter({
   suffix?: string;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  // FIX: rootMargin must be pixels, not percentages – otherwise it never triggers.
+  // pixels (not percentages) so it reliably triggers
   const inView = useInView(ref, { once: true, margin: "-120px 0px -120px 0px" });
   const [val, setVal] = useState(from);
 
@@ -97,7 +98,6 @@ const REVIEWS = [
   { name: "Dosaluver", text: "Usually I buy bundles and forget them. This time I actually played something. That’s progress." },
 ];
 
-
 function ReviewCard({ name, text }: { name: string; text: string }) {
   return (
     <div className="min-w-[26rem] max-w-[26rem]">
@@ -145,8 +145,12 @@ const ReviewCarousel = memo(function ReviewCarousel() {
 });
 
 export default function Home() {
+  const router = useRouter();
   const [ready, setReady] = useState(false);
   const [meta, setMeta] = useState<SaleMeta | null>(null);
+  const [pasteInput, setPasteInput] = useState("");
+  const [submitting, setSubmitting] = useState<null | "login" | "paste">(null);
+  const [error, setError] = useState<string | null>(null);
 
   /* Particles */
   useEffect(() => {
@@ -192,6 +196,38 @@ export default function Home() {
     []
   );
 
+  /* ---------- Handlers: Login + Paste ---------- */
+  const handleSteamLogin = () => {
+    setError(null);
+    setSubmitting("login");
+    // Go to our OpenID entry. The server will redirect back to /profile/:id.
+    window.location.href = "/api/auth/steam";
+  };
+
+  const handlePasteSubmit: React.FormEventHandler<HTMLFormElement> = async (e) => {
+    e.preventDefault();
+    if (!pasteInput.trim()) return;
+
+    setError(null);
+    setSubmitting("paste");
+    try {
+      const res = await fetch("/api/steam/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: pasteInput.trim() }),
+      });
+      if (!res.ok) {
+        const msg = await res.json().catch(() => ({}));
+        throw new Error(msg?.error || "Could not resolve that Steam profile");
+      }
+      const { steamId } = await res.json();
+      router.push(`/profile/${steamId}`);
+    } catch (err: any) {
+      setError(err?.message || "Resolution failed");
+      setSubmitting(null);
+    }
+  };
+
   return (
     <main className="relative min-h-screen text-gray-100 overflow-hidden">
       {/* background */}
@@ -228,15 +264,49 @@ export default function Home() {
           </p>
 
           <div className="flex flex-col sm:flex-row items-center gap-6 w-full max-w-xl mx-auto">
-            <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className="w-full sm:w-auto px-8 py-4 text-lg rounded-xl font-bold bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-lg shadow-blue-500/40 transition-transform flex items-center justify-center gap-3">
-              <FaSteam /> Login with Steam
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="w-full sm:w-auto px-8 py-4 text-lg rounded-xl font-bold bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-lg shadow-blue-500/40 transition-transform flex items-center justify-center gap-3 disabled:opacity-60"
+              onClick={handleSteamLogin}
+              disabled={submitting === "login"}
+              aria-label="Login with Steam"
+            >
+              <FaSteam /> {submitting === "login" ? "Redirecting..." : "Login with Steam"}
             </motion.button>
+
             <span className="text-gray-400 font-semibold">or</span>
-            <motion.form whileHover={{ scale: 1.02 }} className="flex w-full sm:w-auto bg-black/30 rounded-xl border border-white/10 overflow-hidden shadow-lg">
-              <input type="text" placeholder="Steam username" className="px-4 py-3 w-full text-gray-200 bg-transparent focus:outline-none placeholder-gray-500" />
-              <button type="submit" className="px-6 py-3 bg-blue-600 hover:bg-blue-700 font-bold text-white transition">Go</button>
+
+            <motion.form
+              whileHover={{ scale: 1.02 }}
+              onSubmit={handlePasteSubmit}
+              className="flex w-full sm:w-auto bg-black/30 rounded-xl border border-white/10 overflow-hidden shadow-lg"
+              role="search"
+              aria-label="Resolve Steam username or URL"
+            >
+              <input
+                type="text"
+                placeholder="Steam username"
+                className="px-4 py-3 w-full text-gray-200 bg-transparent focus:outline-none placeholder-gray-500"
+                value={pasteInput}
+                onChange={(e) => setPasteInput(e.target.value)}
+                aria-label="Steam username or profile URL"
+              />
+              <button
+                type="submit"
+                className="px-6 py-3 bg-blue-600 hover:bg-blue-700 font-bold text-white transition disabled:opacity-60"
+                disabled={submitting === "paste"}
+              >
+                {submitting === "paste" ? "Resolving..." : "Go"}
+              </button>
             </motion.form>
           </div>
+
+          {error && (
+            <p className="mt-4 text-sm text-red-300">
+              {error}
+            </p>
+          )}
         </div>
       </section>
 
@@ -322,10 +392,10 @@ export default function Home() {
             <p className="text-gray-400 text-sm">Your Steam, curated. Discover games shaped around you—trending, discounted, unforgettable. Open source. Private by design.</p>
           </div>
 
-            <div className="md:col-start-3 md:justify-self-end text-center md:text-right">
+          <div className="md:col-start-3 md:justify-self-end text-center md:text-right">
             <h3 className="text-lg font-semibold mb-4 md:text-left">Credits</h3>
             <p className="text-gray-400 text-sm">© {new Date().getFullYear()} SteamPicker — Built by Plazor & Mai</p>
-            </div>
+          </div>
         </div>
       </footer>
 
