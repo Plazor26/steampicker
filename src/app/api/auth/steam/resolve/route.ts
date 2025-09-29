@@ -16,8 +16,10 @@ export async function POST(req: NextRequest) {
   } else if (/^\d{17}$/.test(input)) {
     return NextResponse.json({ steamId: input });
   } else {
-    vanity = input;
+    // Treat any other string as a potential vanity URL
+    vanity = input.trim();
   }
+
 
   if (!vanity) {
     return NextResponse.json({ error: "Invalid input" }, { status: 400 });

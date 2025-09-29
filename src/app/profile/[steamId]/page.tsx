@@ -1,3 +1,4 @@
+// src/app/profile/[steamId]/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState, use } from "react";
@@ -39,9 +40,111 @@ export const dynamic = "force-dynamic";
 /* ---------- Helpers ---------- */
 function guessCCFromNavigator(): string | null {
   if (typeof navigator === "undefined") return null;
-  const loc = Intl.DateTimeFormat().resolvedOptions().locale || navigator.language || "";
-  const part = loc.split("-")[1];
+  const loc = Intl.DateTimeFormat().resolvedOptions().locale || (navigator as any).language || "";
+  const part = String(loc).split("-")[1];
   return part && part.length === 2 ? part.toUpperCase() : null;
+}
+
+function headerURL(appid: number) {
+  return `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appid}/header.jpg`;
+}
+
+/** Normalize a wide variety of catalog payloads into a flat array */
+function normalizeCatalog(cat: any): Array<{
+  appid: number;
+  name: string;
+  header?: string;
+  price_cents?: number;
+  discount_pct?: number;
+  currencyCode?: string;
+}> {
+  if (!cat) return [];
+  // If it's already an array
+  if (Array.isArray(cat)) {
+    return normalizeCatalog({ items: cat });
+  }
+
+  // Try common keys
+  let arr =
+    cat.candidates ??
+    cat.items ??
+    cat.games ??
+    cat.data ??
+    cat.list ??
+    cat.response?.items ??
+    cat.response?.candidates ??
+    null;
+
+  // featuredcategories-like shapes
+  if (!Array.isArray(arr) || arr.length === 0) {
+    if (Array.isArray(cat?.featured?.items)) arr = cat.featured.items;
+    else if (Array.isArray(cat?.specials?.items)) arr = cat.specials.items;
+    else if (Array.isArray(cat?.topsellers?.items)) arr = cat.topsellers.items;
+  }
+
+  // Some payloads put arrays under unknown keys – flatten any array values
+  if (!Array.isArray(arr) || arr.length === 0) {
+    const flat: any[] = [];
+    for (const k of Object.keys(cat)) {
+      const v = (cat as any)[k];
+      if (Array.isArray(v)) flat.push(...v);
+      else if (v && typeof v === "object") {
+        for (const kk of Object.keys(v)) {
+          const vv = (v as any)[kk];
+          if (Array.isArray(vv)) flat.push(...vv);
+        }
+      }
+    }
+    arr = flat;
+  }
+
+  if (!Array.isArray(arr)) return [];
+
+  return arr
+    .map((c: any) => {
+      const appid =
+        c.appid ?? c.id ?? c.app_id ?? c.appID ?? c.appId ?? null;
+      if (!Number.isFinite(appid)) return null;
+      const price_cents =
+        typeof c.price_cents === "number"
+          ? c.price_cents
+          : typeof c.final_price === "number"
+          ? c.final_price
+          : typeof c.price === "number"
+          ? c.price
+          : undefined;
+      const header =
+        c.header ?? c.header_image ?? c.capsule_image ?? c.large_capsule_image ?? headerURL(appid);
+      return {
+        appid,
+        name: c.name ?? c.title ?? `App ${appid}`,
+        header,
+        price_cents,
+        discount_pct: c.discount_pct ?? c.discount_percent ?? c.discount ?? 0,
+        currencyCode: c.currencyCode ?? c.currency ?? undefined,
+      };
+    })
+    .filter(Boolean) as any[];
+}
+
+/** Try several catalog URLs until we get items */
+async function fetchCatalog(cc: string | null) {
+  const tries = [
+    `/api/steam/catalog?${new URLSearchParams({ ...(cc ? { cc } : {}), limit: "300" }).toString()}`,
+    `/api/steam/catalog?${new URLSearchParams({ ...(cc ? { cc } : {}) }).toString()}`,
+    `/api/steam/catalog`,
+  ];
+  for (const url of tries) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      const j = await r.json().catch(() => null);
+      const items = normalizeCatalog(j);
+      if (Array.isArray(items) && items.length) return items;
+    } catch {
+      /* try next */
+    }
+  }
+  return [] as ReturnType<typeof normalizeCatalog>;
 }
 
 export default function Page({
@@ -53,7 +156,7 @@ export default function Page({
   const { steamId } = use(params);
 
   /* ---------- state ---------- */
-  const [ready, setReady] = useState(false); // particles ready
+  const [ready, setReady] = useState(false);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -66,10 +169,10 @@ export default function Page({
   const [tagRecent, setTagRecent] = useState(false);
   const [minHours, setMinHours] = useState(0);
 
-  // “account value”
+  // Account value (formatted display string goes in currency)
   const [acctValue, setAcctValue] = useState<{ value: number; currency: string } | null>(null);
 
-  // Recommendations (math-based prescreener)
+  // Recommendations
   const [recs, setRecs] = useState<any[]>([]);
   const [loadingRecs, setLoadingRecs] = useState(false);
   const [recErr, setRecErr] = useState<string | null>(null);
@@ -108,17 +211,16 @@ export default function Page({
         const r = await fetch(`/api/steam/value/${steamId}${cc ? `?cc=${cc}` : ""}`, {
           cache: "no-store",
         });
-        if (!alive || !r.ok) return; // ignore if route not implemented
+        if (!alive || !r.ok) return;
         const j = await r.json().catch(() => null);
         if (j?.ok && typeof j.value === "number") {
-          const formatted =
-            j.currencyCode
-              ? new Intl.NumberFormat(undefined, { style: "currency", currency: j.currencyCode }).format(j.value)
-              : `${j.currency ?? ""} ${j.value.toLocaleString()}`;
+          const formatted = j.currencyCode
+            ? new Intl.NumberFormat(undefined, { style: "currency", currency: j.currencyCode }).format(j.value)
+            : `${j.currency ?? ""} ${j.value.toLocaleString()}`;
           setAcctValue({ value: j.value, currency: formatted });
         }
       } catch {
-        /* optional feature, ignore errors */
+        /* optional */
       }
     })();
     return () => {
@@ -148,13 +250,12 @@ export default function Page({
     []
   );
 
-  /* ---------- Derived values (hooks stay unconditional) ---------- */
+  /* ---------- Derived values ---------- */
   const isOk = !!data && "ok" in data && data.ok;
   const profile: Profile | null = isOk ? (data as ApiOk).profile : null;
   const lib: Library | null = isOk ? (data as ApiOk).library : null;
   const ownedSet = useMemo(() => new Set((lib?.ownedGames || []).map((g) => g.appid)), [lib]);
 
-  // Base list
   const allGames: GameLite[] = useMemo(() => {
     const base =
       lib?.allGames && lib.allGames.length > 0
@@ -171,7 +272,6 @@ export default function Page({
     return dedup;
   }, [lib]);
 
-  // Filters
   const filtered = useMemo(() => {
     let list = allGames;
     if (ownedOnly) list = list.filter((g) => ownedSet.has(g.appid));
@@ -211,36 +311,31 @@ export default function Page({
       setRecErr(null);
       try {
         const cc = guessCCFromNavigator();
-        const catRes = await fetch(`/api/steam/catalog${cc ? `?cc=${cc}` : ""}`, { cache: "no-store" });
-        const cat = await catRes.json().catch(() => null);
-        let candidates: any[] = Array.isArray(cat?.candidates) ? cat.candidates : [];
+        let candidates = await fetchCatalog(cc);
 
-        // Ensure header fallback
-        candidates = candidates.map((c) => ({
-          ...c,
-          header:
-            c.header ||
-            `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${c.appid}/header.jpg`,
-        }));
-
-        // Exclude owned
-        candidates = candidates.filter((c) => !ownedSet.has(c.appid));
+        // Ensure header exists & remove owned
+        candidates = candidates
+          .map((c) => ({ ...c, header: c.header || headerURL(c.appid) }))
+          .filter((c) => !ownedSet.has(c.appid));
 
         let shortlist: any[] = [];
+
+        // Try prescreener first (if it supports candidates)
         try {
-          // Try prescreen if it supports candidates; if it throws, we fall back
           const maybe = await (prescreen as any)(
             { allGames: lib.allGames as GameLite[], favoriteGenres: [], favoriteCategories: [] },
             60,
             candidates
           );
-          if (Array.isArray(maybe) && maybe.length) shortlist = maybe;
+          if (Array.isArray(maybe) && maybe.length) {
+            shortlist = maybe;
+          }
         } catch {
-          // ignore; fallback below
+          /* ignore */
         }
 
-        if (!shortlist.length) {
-          // Fallback: discount desc, then cheaper first, then name
+        // Fallback: biggest discount → cheapest → name
+        if (!shortlist.length && candidates.length) {
           shortlist = [...candidates]
             .sort((a, b) => {
               const d = (b.discount_pct || 0) - (a.discount_pct || 0);
@@ -254,9 +349,10 @@ export default function Page({
             .map((c, i) => ({ ...c, score: (c.discount_pct || 0) / 100 || 0.01 * (60 - i) }));
         }
 
+        // Final cap
+        shortlist = shortlist.slice(0, 30);
+
         if (!alive) return;
-        // Safety filter (owned) + cap
-        shortlist = shortlist.filter((g) => !ownedSet.has(g.appid)).slice(0, 30);
         setRecs(shortlist);
       } catch (e: any) {
         if (!alive) return;
@@ -370,8 +466,6 @@ export default function Page({
             </Section>
           )}
 
-          {/* (Removed) Top Games by Playtime */}
-
           {/* RECOMMENDATIONS (beta) */}
           <section className="px-6 py-10 max-w-6xl mx-auto">
             <h2 className="text-2xl font-bold mb-4">Recommendations (beta)</h2>
@@ -404,7 +498,6 @@ export default function Page({
                     <div className="p-4">
                       <div className="font-semibold mb-1">{g.name}</div>
                       <div className="text-sm text-gray-400">
-                        {/* Optional price display if available */}
                         {typeof g.price_cents === "number" ? (
                           <span>Price: {(g.price_cents / 100).toLocaleString()}</span>
                         ) : (
@@ -506,28 +599,17 @@ export default function Page({
         </>
       )}
 
-      {/* Local keyframes to keep the background motion identical to the landing page */}
+      {/* Local keyframes (match landing background) */}
       <style jsx global>{`
-        @keyframes float-slow {
-          0% { transform: translate3d(0, 0, 0) scale(1); }
-          50% { transform: translate3d(30px, -20px, 0) scale(1.05); }
-          100% { transform: translate3d(0, 0, 0) scale(1); }
-        }
-        @keyframes float-slower {
-          0% { transform: translate3d(0, 0, 0) scale(1); }
-          50% { transform: translate3d(-40px, 25px, 0) scale(1.04); }
-          100% { transform: translate3d(0, 0, 0) scale(1); }
-        }
-        @keyframes grid-pan {
-          0% { background-position: 0px 0px; }
-          100% { background-position: 40px 40px; }
-        }
+        @keyframes float-slow { 0% { transform: translate3d(0,0,0) scale(1); } 50% { transform: translate3d(30px,-20px,0) scale(1.05); } 100% { transform: translate3d(0,0,0) scale(1); } }
+        @keyframes float-slower { 0% { transform: translate3d(0,0,0) scale(1); } 50% { transform: translate3d(-40px,25px,0) scale(1.04); } 100% { transform: translate3d(0,0,0) scale(1); } }
+        @keyframes grid-pan { 0% { background-position: 0px 0px; } 100% { background-position: 40px 40px; } }
       `}</style>
     </main>
   );
 }
 
-/* ---------- Background (shared look with landing page) ---------- */
+/* ---------- Background ---------- */
 function Background({
   ready,
   particlesOptions,
