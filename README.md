@@ -98,5 +98,3 @@ Feedback and contributions are welcome!
 
 Built over a single weekend as a fun experiment in **browser-side ML**, timed with the Steam Sale.
 The goal: make backlogs less overwhelming and game discovery more fun.
-
-Do you want me to also draft a **short “Known Bugs / To-Do” section** so you look even more transparent and engaged with contributions?
