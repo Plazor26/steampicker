@@ -50,7 +50,7 @@ Try it here: [Demo](htpps://steampicker.plazor.xyz)
 ### Installation
 
 ```bash
-git clone https://github.com/your-username/steam-picker.git
+git clone https://github.com/Plazor26/steam-site.git
 cd steam-picker
 npm install
 ```
