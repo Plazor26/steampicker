@@ -16,7 +16,7 @@ Free, open source, and evolving. Inspired by the upcoming Steam Sale.
 
 ## 🚀 Demo
 
-Try it here: [Demo Link]
+Try it here: steampicker.plazor.xyz
 
 ---
 
