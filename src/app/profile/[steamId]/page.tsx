@@ -1,3 +1,4 @@
+// src/app/profile/[steamId]/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState, use } from "react";
@@ -5,6 +6,7 @@ import Image from "next/image";
 import Link from "next/link";
 import Particles, { initParticlesEngine } from "@tsparticles/react";
 import { loadFull } from "tsparticles";
+import { prescreen } from "@/lib/prescreener";
 
 /* ---------- Types returned by /api/steam/profile/[steamId] ---------- */
 type Profile = {
@@ -17,7 +19,7 @@ type GameLite = {
   appid: number;
   name: string;
   header: string;
-  hours: number;   // lifetime hours
+  hours: number; // lifetime hours
   hours2w?: number; // last 2 weeks hours
 };
 type Library = {
@@ -25,7 +27,7 @@ type Library = {
   totalMinutes: number | null; // lifetime minutes
   neverPlayed: number | null;
   recentGames: GameLite[];
-  topGames: GameLite[];
+  topGames: GameLite[]; // kept in type, but we won't render this section anymore
   ownedGames: { appid: number }[];
   allGames?: GameLite[];
 };
@@ -34,6 +36,116 @@ type ApiErr = { ok: false; error: string };
 type ApiResponse = ApiOk | ApiErr;
 
 export const dynamic = "force-dynamic";
+
+/* ---------- Helpers ---------- */
+function guessCCFromNavigator(): string | null {
+  if (typeof navigator === "undefined") return null;
+  const loc = Intl.DateTimeFormat().resolvedOptions().locale || (navigator as any).language || "";
+  const part = String(loc).split("-")[1];
+  return part && part.length === 2 ? part.toUpperCase() : null;
+}
+
+function headerURL(appid: number) {
+  return `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appid}/header.jpg`;
+}
+
+/** Normalize a wide variety of catalog payloads into a flat array */
+function normalizeCatalog(cat: any): Array<{
+  appid: number;
+  name: string;
+  header?: string;
+  price_cents?: number;
+  discount_pct?: number;
+  currencyCode?: string;
+}> {
+  if (!cat) return [];
+  // If it's already an array
+  if (Array.isArray(cat)) {
+    return normalizeCatalog({ items: cat });
+  }
+
+  // Try common keys
+  let arr =
+    cat.candidates ??
+    cat.items ??
+    cat.games ??
+    cat.data ??
+    cat.list ??
+    cat.response?.items ??
+    cat.response?.candidates ??
+    null;
+
+  // featuredcategories-like shapes
+  if (!Array.isArray(arr) || arr.length === 0) {
+    if (Array.isArray(cat?.featured?.items)) arr = cat.featured.items;
+    else if (Array.isArray(cat?.specials?.items)) arr = cat.specials.items;
+    else if (Array.isArray(cat?.topsellers?.items)) arr = cat.topsellers.items;
+  }
+
+  // Some payloads put arrays under unknown keys – flatten any array values
+  if (!Array.isArray(arr) || arr.length === 0) {
+    const flat: any[] = [];
+    for (const k of Object.keys(cat)) {
+      const v = (cat as any)[k];
+      if (Array.isArray(v)) flat.push(...v);
+      else if (v && typeof v === "object") {
+        for (const kk of Object.keys(v)) {
+          const vv = (v as any)[kk];
+          if (Array.isArray(vv)) flat.push(...vv);
+        }
+      }
+    }
+    arr = flat;
+  }
+
+  if (!Array.isArray(arr)) return [];
+
+  return arr
+    .map((c: any) => {
+      const appid =
+        c.appid ?? c.id ?? c.app_id ?? c.appID ?? c.appId ?? null;
+      if (!Number.isFinite(appid)) return null;
+      const price_cents =
+        typeof c.price_cents === "number"
+          ? c.price_cents
+          : typeof c.final_price === "number"
+          ? c.final_price
+          : typeof c.price === "number"
+          ? c.price
+          : undefined;
+      const header =
+        c.header ?? c.header_image ?? c.capsule_image ?? c.large_capsule_image ?? headerURL(appid);
+      return {
+        appid,
+        name: c.name ?? c.title ?? `App ${appid}`,
+        header,
+        price_cents,
+        discount_pct: c.discount_pct ?? c.discount_percent ?? c.discount ?? 0,
+        currencyCode: c.currencyCode ?? c.currency ?? undefined,
+      };
+    })
+    .filter(Boolean) as any[];
+}
+
+/** Try several catalog URLs until we get items */
+async function fetchCatalog(cc: string | null) {
+  const tries = [
+    `/api/steam/catalog?${new URLSearchParams({ ...(cc ? { cc } : {}), limit: "300" }).toString()}`,
+    `/api/steam/catalog?${new URLSearchParams({ ...(cc ? { cc } : {}) }).toString()}`,
+    `/api/steam/catalog`,
+  ];
+  for (const url of tries) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      const j = await r.json().catch(() => null);
+      const items = normalizeCatalog(j);
+      if (Array.isArray(items) && items.length) return items;
+    } catch {
+      /* try next */
+    }
+  }
+  return [] as ReturnType<typeof normalizeCatalog>;
+}
 
 export default function Page({
   params,
@@ -44,7 +156,7 @@ export default function Page({
   const { steamId } = use(params);
 
   /* ---------- state ---------- */
-  const [ready, setReady] = useState(false);         // particles ready
+  const [ready, setReady] = useState(false);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -57,8 +169,13 @@ export default function Page({
   const [tagRecent, setTagRecent] = useState(false);
   const [minHours, setMinHours] = useState(0);
 
-  // Lazy “account value”
+  // Account value (formatted display string goes in currency)
   const [acctValue, setAcctValue] = useState<{ value: number; currency: string } | null>(null);
+
+  // Recommendations
+  const [recs, setRecs] = useState<any[]>([]);
+  const [loadingRecs, setLoadingRecs] = useState(false);
+  const [recErr, setRecErr] = useState<string | null>(null);
 
   /* ---------- Particles ---------- */
   useEffect(() => {
@@ -85,20 +202,25 @@ export default function Page({
     };
   }, [steamId]);
 
-  /* ---------- Try to load estimated account value (optional route) ---------- */
+  /* ---------- Load estimated account value (region aware) ---------- */
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch(`/api/steam/value/${steamId}`, { cache: "no-store" });
-        if (!alive) return;
-        if (!r.ok) return; // silently ignore if route not implemented
+        const cc = guessCCFromNavigator();
+        const r = await fetch(`/api/steam/value/${steamId}${cc ? `?cc=${cc}` : ""}`, {
+          cache: "no-store",
+        });
+        if (!alive || !r.ok) return;
         const j = await r.json().catch(() => null);
         if (j?.ok && typeof j.value === "number") {
-          setAcctValue({ value: j.value, currency: j.currency ?? "" });
+          const formatted = j.currencyCode
+            ? new Intl.NumberFormat(undefined, { style: "currency", currency: j.currencyCode }).format(j.value)
+            : `${j.currency ?? ""} ${j.value.toLocaleString()}`;
+          setAcctValue({ value: j.value, currency: formatted });
         }
       } catch {
-        /* ignore – optional feature */
+        /* optional */
       }
     })();
     return () => {
@@ -115,13 +237,7 @@ export default function Page({
       particles: {
         number: { value: 140, density: { enable: true, area: 800 } },
         color: { value: ["#60a5fa", "#a78bfa", "#22d3ee"] },
-        links: {
-          enable: true,
-          color: "#7dd3fc",
-          distance: 140,
-          opacity: 0.45,
-          width: 1,
-        },
+        links: { enable: true, color: "#7dd3fc", distance: 140, opacity: 0.45, width: 1 },
         move: { enable: true, speed: 1.1, outModes: { default: "out" } },
         opacity: { value: 0.75 },
         size: { value: { min: 2, max: 4 } },
@@ -134,22 +250,17 @@ export default function Page({
     []
   );
 
-  /* ---------- Derive safe values every render (no early-return before hooks) ---------- */
+  /* ---------- Derived values ---------- */
   const isOk = !!data && "ok" in data && data.ok;
   const profile: Profile | null = isOk ? (data as ApiOk).profile : null;
   const lib: Library | null = isOk ? (data as ApiOk).library : null;
-  const ownedSet = useMemo(
-    () => new Set((lib?.ownedGames || []).map((g) => g.appid)),
-    [lib]
-  );
+  const ownedSet = useMemo(() => new Set((lib?.ownedGames || []).map((g) => g.appid)), [lib]);
 
-  // Base list for browser; compute regardless, with safe defaults
   const allGames: GameLite[] = useMemo(() => {
     const base =
       lib?.allGames && lib.allGames.length > 0
         ? lib.allGames
         : [...(lib?.recentGames || []), ...(lib?.topGames || [])];
-
     const seen = new Set<number>();
     const dedup: GameLite[] = [];
     for (const g of base) {
@@ -161,10 +272,8 @@ export default function Page({
     return dedup;
   }, [lib]);
 
-  // Filtered + sorted list (also safe on first render)
   const filtered = useMemo(() => {
     let list = allGames;
-
     if (ownedOnly) list = list.filter((g) => ownedSet.has(g.appid));
     if (query.trim()) {
       const q = query.trim().toLowerCase();
@@ -187,9 +296,75 @@ export default function Page({
         list = [...list].sort((a, b) => b.hours - a.hours);
         break;
     }
-
     return list;
   }, [allGames, ownedOnly, query, minHours, tagNeverPlayed, tagUnder2h, tagRecent, sortBy, ownedSet]);
+
+  /* ---------- Recommendations (catalog -> exclude owned -> prescreen/fallback) ---------- */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!lib?.allGames?.length) {
+        setRecs([]);
+        return;
+      }
+      setLoadingRecs(true);
+      setRecErr(null);
+      try {
+        const cc = guessCCFromNavigator();
+        let candidates = await fetchCatalog(cc);
+
+        // Ensure header exists & remove owned
+        candidates = candidates
+          .map((c) => ({ ...c, header: c.header || headerURL(c.appid) }))
+          .filter((c) => !ownedSet.has(c.appid));
+
+        let shortlist: any[] = [];
+
+        // Try prescreener first (if it supports candidates)
+        try {
+          const maybe = await (prescreen as any)(
+            { allGames: lib.allGames as GameLite[], favoriteGenres: [], favoriteCategories: [] },
+            60,
+            candidates
+          );
+          if (Array.isArray(maybe) && maybe.length) {
+            shortlist = maybe;
+          }
+        } catch {
+          /* ignore */
+        }
+
+        // Fallback: biggest discount → cheapest → name
+        if (!shortlist.length && candidates.length) {
+          shortlist = [...candidates]
+            .sort((a, b) => {
+              const d = (b.discount_pct || 0) - (a.discount_pct || 0);
+              if (d) return d;
+              const ap = a.price_cents ?? Number.MAX_SAFE_INTEGER;
+              const bp = b.price_cents ?? Number.MAX_SAFE_INTEGER;
+              if (ap !== bp) return ap - bp;
+              return String(a.name).localeCompare(String(b.name));
+            })
+            .slice(0, 60)
+            .map((c, i) => ({ ...c, score: (c.discount_pct || 0) / 100 || 0.01 * (60 - i) }));
+        }
+
+        // Final cap
+        shortlist = shortlist.slice(0, 30);
+
+        if (!alive) return;
+        setRecs(shortlist);
+      } catch (e: any) {
+        if (!alive) return;
+        setRecErr(e?.message || "Failed to build recommendations.");
+      } finally {
+        if (alive) setLoadingRecs(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [lib, ownedSet]);
 
   /* ---------- UI ---------- */
   const loading = !data && !err;
@@ -215,10 +390,7 @@ export default function Page({
           <div className="max-w-xl text-center bg-white/5 border border-white/10 p-8 rounded-xl backdrop-blur">
             <h1 className="text-3xl font-bold mb-4">Profile</h1>
             <p className="text-gray-300 mb-6">{errorMsg}</p>
-            <Link
-              href="/"
-              className="px-5 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 font-semibold inline-block"
-            >
+            <Link href="/" className="px-5 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 font-semibold inline-block">
               Back to Home
             </Link>
           </div>
@@ -244,9 +416,7 @@ export default function Page({
                   <div className="w-24 h-24 rounded-full bg-white/10 border border-white/10" />
                 )}
               </div>
-              <h1 className="text-3xl font-extrabold mb-2">
-                {profile?.personaName ?? "Unknown Player"}
-              </h1>
+              <h1 className="text-3xl font-extrabold mb-2">{profile?.personaName ?? "Unknown Player"}</h1>
               <p className="text-sm text-gray-400">
                 SteamID: <span className="font-mono">{steamId}</span>
               </p>
@@ -269,7 +439,7 @@ export default function Page({
             </div>
           </section>
 
-          {/* Stats (adds Account Value if available) */}
+          {/* Stats (Account Value formatted) */}
           <section className="px-6 pb-10 max-w-6xl mx-auto">
             <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
               <Stat title="Total Games" value={fmt(lib?.totalGames)} accent="text-blue-300" />
@@ -282,7 +452,7 @@ export default function Page({
               />
               <Stat
                 title="Account Value"
-                value={acctValue ? `${acctValue.currency} ${acctValue.value.toLocaleString()}` : "—"}
+                value={acctValue ? acctValue.currency : "—"}
                 sub={acctValue ? "estimated" : undefined}
                 accent="text-cyan-300"
               />
@@ -296,12 +466,51 @@ export default function Page({
             </Section>
           )}
 
-          {/* Top Games */}
-          {!!lib?.topGames?.length && (
-            <Section title="Top Games by Playtime">
-              <GameRow games={lib.topGames.filter((g) => ownedSet.has(g.appid))} />
-            </Section>
-          )}
+          {/* RECOMMENDATIONS (beta) */}
+          <section className="px-6 py-10 max-w-6xl mx-auto">
+            <h2 className="text-2xl font-bold mb-4">Recommendations (beta)</h2>
+
+            {loadingRecs && <div className="text-gray-400">Crunching numbers…</div>}
+            {recErr && <div className="text-red-300">{recErr}</div>}
+
+            {!loadingRecs && !recErr && (
+              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                {recs.map((g) => (
+                  <a
+                    key={g.appid}
+                    href={`https://store.steampowered.com/app/${g.appid}`}
+                    target="_blank"
+                    className="group rounded-xl overflow-hidden border border-white/10 bg-white/5 backdrop-blur hover:border-white/20 transition-colors"
+                  >
+                    <div className="relative w-full h-[140px] bg-black">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={g.header}
+                        alt={g.name}
+                        className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
+                        loading="lazy"
+                      />
+                      <div className="absolute top-2 left-2 flex gap-2">
+                        {typeof g.score === "number" && <Badge>{Math.round(g.score * 100)}%</Badge>}
+                        {g.discount_pct ? <Badge>{g.discount_pct}% off</Badge> : null}
+                      </div>
+                    </div>
+                    <div className="p-4">
+                      <div className="font-semibold mb-1">{g.name}</div>
+                      <div className="text-sm text-gray-400">
+                        {typeof g.price_cents === "number" ? (
+                          <span>Price: {(g.price_cents / 100).toLocaleString()}</span>
+                        ) : (
+                          <span>View on store</span>
+                        )}
+                      </div>
+                    </div>
+                  </a>
+                ))}
+                {!recs.length && <div className="text-gray-400">No recommendations yet.</div>}
+              </div>
+            )}
+          </section>
 
           {/* ALL GAMES – scrollable browser with filters */}
           <section className="px-6 py-10 max-w-6xl mx-auto">
@@ -351,7 +560,7 @@ export default function Page({
             </div>
 
             {/* Scrollable grid */}
-            <div className="max-h=[70vh] max-h-[70vh] overflow-y-auto pr-1">
+            <div className="max-h-[70vh] overflow-y-auto pr-1">
               <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
                 {filtered.map((g) => (
                   <a
@@ -390,28 +599,17 @@ export default function Page({
         </>
       )}
 
-      {/* Local keyframes to keep the background motion identical to the landing page */}
+      {/* Local keyframes (match landing background) */}
       <style jsx global>{`
-        @keyframes float-slow {
-          0% { transform: translate3d(0, 0, 0) scale(1); }
-          50% { transform: translate3d(30px, -20px, 0) scale(1.05); }
-          100% { transform: translate3d(0, 0, 0) scale(1); }
-        }
-        @keyframes float-slower {
-          0% { transform: translate3d(0, 0, 0) scale(1); }
-          50% { transform: translate3d(-40px, 25px, 0) scale(1.04); }
-          100% { transform: translate3d(0, 0, 0) scale(1); }
-        }
-        @keyframes grid-pan {
-          0% { background-position: 0px 0px; }
-          100% { background-position: 40px 40px; }
-        }
+        @keyframes float-slow { 0% { transform: translate3d(0,0,0) scale(1); } 50% { transform: translate3d(30px,-20px,0) scale(1.05); } 100% { transform: translate3d(0,0,0) scale(1); } }
+        @keyframes float-slower { 0% { transform: translate3d(0,0,0) scale(1); } 50% { transform: translate3d(-40px,25px,0) scale(1.04); } 100% { transform: translate3d(0,0,0) scale(1); } }
+        @keyframes grid-pan { 0% { background-position: 0px 0px; } 100% { background-position: 40px 40px; } }
       `}</style>
     </main>
   );
 }
 
-/* ---------- Background (shared look with landing page) ---------- */
+/* ---------- Background ---------- */
 function Background({
   ready,
   particlesOptions,
@@ -497,11 +695,7 @@ function GameRow({ games, show2w = false }: { games: GameLite[]; show2w?: boolea
 }
 
 function Badge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-black/60 border border-white/10">
-      {children}
-    </span>
-  );
+  return <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-black/60 border border-white/10">{children}</span>;
 }
 
 function Toggle({
@@ -515,12 +709,7 @@ function Toggle({
 }) {
   return (
     <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-      <input
-        type="checkbox"
-        className="accent-blue-500"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-      />
+      <input type="checkbox" className="accent-blue-500" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       <span className="text-sm text-gray-300">{label}</span>
     </label>
   );

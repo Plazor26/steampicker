@@ -244,9 +244,9 @@ export default function Home() {
       {/* HERO (glass) */}
       <section className="relative flex flex-col items-center justify-center text-center py-28 px-6">
         <div className="bg-gray-900/40 backdrop-blur-xl border border-gray-700/50 rounded-2xl shadow-2xl px-8 sm:px-10 py-10 sm:py-12 max-w-2xl w-full">
-          <h1 className="text-6xl md:text-7xl font-extrabold mb-4 drop-shadow-[0_0_28px_rgba(59,130,246,0.7)]">
+            <h1 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-extrabold mb-4 drop-shadow-[0_0_28px_rgba(59,130,246,0.7)] break-words">
             <span className="text-blue-400">SteamPicker</span>
-          </h1>
+            </h1>
           <p className="text-xl md:text-2xl text-gray-200/90 mb-1">Find sales that match your taste.</p>
           <h2 className="text-lg md:text-xl text-gray-300 mb-6">
             <Typewriter
@@ -286,11 +286,11 @@ export default function Home() {
             >
               <input
                 type="text"
-                placeholder="Steam username"
+                placeholder="Steam URL"
                 className="px-4 py-3 w-full text-gray-200 bg-transparent focus:outline-none placeholder-gray-500"
                 value={pasteInput}
                 onChange={(e) => setPasteInput(e.target.value)}
-                aria-label="Steam username or profile URL"
+                aria-label="Steam profile URL"
               />
               <button
                 type="submit"

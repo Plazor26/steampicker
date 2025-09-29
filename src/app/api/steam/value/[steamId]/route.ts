@@ -1,156 +1,100 @@
+// src/app/api/steam/value/[steamId]/route.ts
 import { NextResponse, type NextRequest } from "next/server";
 
-type AppPrice = {
-  success: boolean;
-  data?: {
-    price_overview?: {
-      currency: string; // e.g., "USD"
-      initial: number;  // cents
-      final: number;    // cents (discounted)
-    };
-    is_free?: boolean;
-  };
-};
+// Small concurrency to be gentle on the store API
+const CONCURRENCY = 8;
 
-const OWNED_URL = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/";
-const APPDETAILS_URL = "https://store.steampowered.com/api/appdetails";
-
-/**
- * GET /api/steam/value/:steamId?cc=US
- * Requires STEAM_API_KEY.
- * Returns { ok, value, currency, cc, counted, missed }
- */
 export async function GET(
   req: NextRequest,
-  { params }: { params: Promise<{ steamId: string }> }
+  ctx: { params: Promise<{ steamId: string }> } // Next 15
 ) {
-  const { steamId } = await params;
-  const key = process.env.STEAM_API_KEY;
+  const { steamId } = await ctx.params;
 
-  if (!key) {
-    return NextResponse.json({ error: "Missing STEAM_API_KEY" }, { status: 500 });
-  }
-  if (!steamId || !/^\d{17}$/.test(steamId.trim())) {
+  if (!steamId || !/^\d{17}$/.test(steamId)) {
     return NextResponse.json(
-      { error: "Invalid steamId (expected 17-digit SteamID64)" },
+      { ok: false, error: "Invalid steamId (expected 17-digit SteamID64)" },
       { status: 400 }
     );
   }
 
-  // Region / currency: query > header country > default US
-  const url = new URL(req.url);
-  const ccParam = url.searchParams.get("cc");
-  const headerCC = req.headers.get("x-vercel-ip-country");
-  const cc = (ccParam || headerCC || "US").toUpperCase();
+  // Region (country code) priority: query ?cc=XX -> geo headers -> default IN (for you)
+  const { searchParams } = new URL(req.url);
+  const qCC = searchParams.get("cc")?.toUpperCase();
+  const ipCC =
+    req.headers.get("x-vercel-ip-country") ||
+    req.headers.get("x-forwarded-country") ||
+    req.headers.get("cf-ipcountry") ||
+    undefined;
+  const cc = (qCC || ipCC || "IN").toUpperCase();
 
-  try {
-    // 1) Get owned games (just appids)
-    const ownedRes = await fetch(
-      `${OWNED_URL}?key=${key}&steamid=${steamId}&include_appinfo=0&include_played_free_games=1`,
-      { cache: "no-store" }
-    );
-    if (!ownedRes.ok) {
-      return NextResponse.json(
-        { error: `Owned games fetch failed (${ownedRes.status})` },
-        { status: 502 }
-      );
-    }
-    const ownedJson = await ownedRes.json();
-    const ownedGames: { appid: number }[] = ownedJson?.response?.games ?? [];
-    const appids = ownedGames.map((g) => g.appid);
-    if (!appids.length) {
-      return NextResponse.json({
-        ok: true,
-        value: 0,
-        currency: "USD",
-        cc,
-        counted: 0,
-        missed: 0,
-      });
-    }
-
-    // 2) Query appdetails for each appid (price_overview) in small batches
-    const CHUNK = 24;
-    const CONCURRENCY = 6;
-
-    let totalCents = 0;
-    let currency = "USD";
-    let counted = 0;
-    let missed = 0;
-
-    // Chunk appids
-    const chunks: number[][] = [];
-    for (let i = 0; i < appids.length; i += CHUNK) {
-      chunks.push(appids.slice(i, i + CHUNK));
-    }
-
-    for (const group of chunks) {
-      // Concurrency pool
-      const results = await poolMap(
-        group,
-        CONCURRENCY,
-        async (appid: number) => {
-          const r = await fetch(`${APPDETAILS_URL}?appids=${appid}&filters=price_overview&cc=${cc}`, {
-            cache: "no-store",
-            headers: { accept: "application/json" },
-          });
-          if (!r.ok) return { ok: false };
-          const j = (await r.json()) as Record<string, AppPrice>;
-          const entry = j?.[String(appid)];
-          if (!entry || !entry.success || !entry.data) return { ok: false };
-
-          const pov = entry.data.price_overview;
-          if (!pov) return { ok: false }; // free / no price / delisted
-          // capture currency from first priced app
-          currency = pov.currency || currency;
-          return { ok: true, final: pov.final };
-        }
-      );
-
-      for (const res of results) {
-        if (res.ok && typeof res.final === "number") {
-          totalCents += res.final;
-          counted++;
-        } else {
-          missed++;
-        }
-      }
-    }
-
-    return NextResponse.json(
-      {
-        ok: true,
-        value: Math.round(totalCents / 100), // integer units in currency
-        currency,
-        cc,
-        counted,
-        missed,
-      },
-      { headers: { "cache-control": "no-store" } }
-    );
-  } catch (err) {
-    return NextResponse.json(
-      { error: "Steam store API error", detail: String(err) },
-      { status: 502 }
-    );
+  // Pull owned games (profile API already maps and caches)
+  const baseUrl = `${req.nextUrl.origin}`;
+  const profRes = await fetch(`${baseUrl}/api/steam/profile/${steamId}`, { cache: "no-store" });
+  if (!profRes.ok) {
+    return NextResponse.json({ ok: false, error: `Profile fetch ${profRes.status}` }, { status: 502 });
   }
-}
+  const prof = await profRes.json();
+  const all = prof?.library?.allGames ?? [];
+  if (!Array.isArray(all) || !all.length) {
+    return NextResponse.json({ ok: true, value: 0, currency: "INR", currencyCode: "INR", cc }, { status: 200 });
+  }
 
-/* ---------- tiny concurrency helper without deps ---------- */
-async function poolMap<T, R>(
-  items: T[],
-  concurrency: number,
-  worker: (item: T) => Promise<R>
-): Promise<R[]> {
-  const ret: R[] = new Array(items.length) as any;
-  let i = 0;
-  const run = async () => {
-    while (i < items.length) {
-      const cur = i++;
-      ret[cur] = await worker(items[cur]);
+  // Currency symbol map (minimal)
+  const symbolFor = (code: string) =>
+    ({ INR: "₹", USD: "$", EUR: "€", GBP: "£", JPY: "¥" } as Record<string, string>)[code] || code;
+
+  // Fetch price_overview per app via appdetails
+  async function fetchPrice(appid: number) {
+    const url = `https://store.steampowered.com/api/appdetails?appids=${appid}&filters=price_overview&cc=${encodeURIComponent(
+      cc
+    )}`;
+    try {
+      const r = await fetch(url, { next: { revalidate: 300 } });
+      if (!r.ok) return null;
+      const j = await r.json();
+      const entry = j?.[String(appid)];
+      if (!entry?.success) return null;
+      const pov = entry?.data?.price_overview;
+      if (!pov) return null;
+      const final = typeof pov.final === "number" ? pov.final : null; // minor units
+      const currencyCode = typeof pov.currency === "string" ? pov.currency : null;
+      return { cents: final, currencyCode };
+    } catch {
+      return null;
     }
-  };
-  const runners = Array.from({ length: Math.min(concurrency, items.length) }, run);
-  await Promise.all(runners);
-  return ret;
+  }
+
+  // Concurrency pool
+  const appids: number[] = all.map((g: any) => g.appid).filter((n: any) => typeof n === "number");
+  let i = 0;
+  const results: { cents: number | null; currencyCode: string | null }[] = [];
+  async function worker() {
+    while (i < appids.length) {
+      const idx = i++;
+      const res = await fetchPrice(appids[idx]);
+      results[idx] = res ?? { cents: null, currencyCode: null };
+    }
+  }
+  const workers = Array.from({ length: Math.min(CONCURRENCY, appids.length) }, () => worker());
+  await Promise.all(workers);
+
+  // Sum in native currency (assumes store gives consistent currency for region)
+  const filtered = results.filter(Boolean) as { cents: number | null; currencyCode: string | null }[];
+  const currencyCode =
+    filtered.find((r) => r.currencyCode)?.currencyCode || (cc === "IN" ? "INR" : "USD");
+  const totalCents = filtered.reduce((sum, r) => sum + (r.cents || 0), 0);
+  const value = totalCents / 100;
+
+  return NextResponse.json(
+    {
+      ok: true,
+      cc,
+      currency: symbolFor(currencyCode),
+      currencyCode,
+      value,
+      counted: filtered.length,
+      owned: appids.length,
+    },
+    { status: 200, headers: { "cache-control": "s-maxage=300, stale-while-revalidate=600" } }
+  );
 }
