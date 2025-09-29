@@ -1,11 +1,8 @@
 // app/api/auth/steam/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-// ⚠️ Put this in your .env.local
-// BASE_URL=http://localhost:3000  (or your deployed domain)
-
 export async function GET(req: NextRequest) {
-  const base = process.env.BASE_URL || "http://localhost:3000";
+  const base = process.env.BASE_URL || "https://steampicker.plazor.xyz";
 
   // Construct OpenID request
   const params = new URLSearchParams({

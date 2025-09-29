@@ -7,6 +7,7 @@ import { Typewriter } from "react-simple-typewriter";
 import { motion, useInView } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { FaGithub, FaSteam, FaFire, FaTags, FaLayerGroup } from "react-icons/fa";
+import { Analytics } from "@vercel/analytics/next"
 
 /* ---------- Small Counter component (animated on scroll) ---------- */
 function Counter({

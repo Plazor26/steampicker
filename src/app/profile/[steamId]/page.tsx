@@ -7,7 +7,7 @@ import Link from "next/link";
 import Particles, { initParticlesEngine } from "@tsparticles/react";
 import { loadFull } from "tsparticles";
 import { prescreen } from "@/lib/prescreener";
-
+import { Analytics } from "@vercel/analytics/next"
 /* ---------- Types returned by /api/steam/profile/[steamId] ---------- */
 type Profile = {
   personaName: string | null;
