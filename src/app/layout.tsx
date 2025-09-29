@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Steam Recommender",
+  title: "Steam Picker",
   description: "AI-powered Steam game recommendations",
 };
 
