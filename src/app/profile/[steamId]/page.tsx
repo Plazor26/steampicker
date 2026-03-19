@@ -91,6 +91,7 @@ function fmtHours(minutes: number | null | undefined) { return minutes == null ?
 function normalizeCatalog(cat: any): Array<{
   appid: number; name: string; header?: string;
   price_cents?: number; discount_pct?: number; currencyCode?: string;
+  matchedTags?: string[]; reviewScore?: number;
 }> {
   if (!cat) return [];
   if (Array.isArray(cat)) return normalizeCatalog({ items: cat });
@@ -127,6 +128,8 @@ function normalizeCatalog(cat: any): Array<{
       header: c.header ?? c.header_image ?? c.capsule_image ?? headerURL(appid),
       price_cents, discount_pct: c.discount_pct ?? c.discount_percent ?? c.discount ?? 0,
       currencyCode: c.currencyCode ?? c.currency ?? undefined,
+      matchedTags: Array.isArray(c.matchedTags) ? c.matchedTags : undefined,
+      reviewScore: typeof c.reviewScore === "number" ? c.reviewScore : undefined,
     };
   }).filter(Boolean) as any[];
 }
