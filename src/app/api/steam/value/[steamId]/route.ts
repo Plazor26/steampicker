@@ -9,8 +9,11 @@ import { NextResponse, type NextRequest } from "next/server";
  * No more rate limiting.
  */
 
-const BATCH_SIZE = 100;   // Steam accepts up to 100 appids per request
-const BATCH_DELAY = 1500; // 1.5s between batches
+const BATCH_SIZE = 100;
+// In production (Vercel), minimal delay since IPs rotate.
+// Locally, use longer delay to avoid rate limiting.
+const IS_PROD = process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
+const BATCH_DELAY = IS_PROD ? 300 : 1500;
 
 // In-memory cache (persists across requests)
 const cache = new Map<string, { cents: number; curr: string; ts: number }>();
@@ -45,16 +48,18 @@ export async function GET(
 
   // Separate cached vs uncached
   const uncached: number[] = [];
+  let skipped = 0;
   for (const id of appids) {
     const c = cache.get(`${id}:${cc}`);
     if (c && Date.now() - c.ts < CACHE_TTL) {
-      results.set(id, { cents: c.cents, curr: c.curr });
+      if (c.curr === "SKIP") { skipped++; }
+      else { results.set(id, { cents: c.cents, curr: c.curr }); }
     } else {
       uncached.push(id);
     }
   }
 
-  console.log("[VALUE] cc:", cc, "cached:", results.size, "need:", uncached.length);
+  console.log("[VALUE] cc:", cc, "cached:", results.size, "skipped:", skipped, "need:", uncached.length);
 
   // Batch fetch uncached (20 appids per request)
   let blocked = false;
@@ -63,17 +68,35 @@ export async function GET(
     try {
       const url = `https://store.steampowered.com/api/appdetails?appids=${batch.join(",")}&filters=price_overview&cc=${cc}`;
       const r = await fetch(url, { next: { revalidate: 86400 } });
-      if (r.status === 403 || !r.ok) { blocked = true; break; }
+      if (r.status === 403 || !r.ok) {
+        // Cache these appids as "no price" so we don't retry forever
+        for (const id of batch) {
+          if (!results.has(id)) cache.set(`${id}:${cc}`, { cents: 0, curr: "SKIP", ts: Date.now() });
+        }
+        blocked = true; break;
+      }
       const text = await r.text();
-      if (text.startsWith("<")) { blocked = true; break; }
+      if (text.startsWith("<")) {
+        for (const id of batch) {
+          if (!results.has(id)) cache.set(`${id}:${cc}`, { cents: 0, curr: "SKIP", ts: Date.now() });
+        }
+        blocked = true; break;
+      }
       const j = JSON.parse(text);
 
       for (const id of batch) {
         const pov = j?.[String(id)]?.data?.price_overview;
-        if (!pov) continue; // free game
+        if (!pov) {
+          // Free game or no price — cache as SKIP so we don't retry
+          cache.set(`${id}:${cc}`, { cents: 0, curr: "SKIP", ts: Date.now() });
+          continue;
+        }
         const cents = typeof pov.initial === "number" ? pov.initial : pov.final;
         const curr = pov.currency;
-        if (typeof cents !== "number" || typeof curr !== "string") continue;
+        if (typeof cents !== "number" || typeof curr !== "string") {
+          cache.set(`${id}:${cc}`, { cents: 0, curr: "SKIP", ts: Date.now() });
+          continue;
+        }
         results.set(id, { cents, curr });
         cache.set(`${id}:${cc}`, { cents, curr, ts: Date.now() });
       }
@@ -86,7 +109,8 @@ export async function GET(
   }
 
   const counted = results.size;
-  const isPartial = counted < appids.length * 0.9;
+  const resolved = counted + skipped; // priced + confirmed-no-price
+  const isPartial = resolved < appids.length * 0.9;
 
   if (counted === 0) {
     console.log("[VALUE] FAILED: no prices, blocked:", blocked);

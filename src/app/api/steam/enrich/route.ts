@@ -106,15 +106,39 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  /** Scrape user-defined tags from the Steam store page (fallback when SteamSpy has none) */
+  async function fetchStorePageTags(appid: number): Promise<string[]> {
+    try {
+      const r = await fetch(`https://store.steampowered.com/app/${appid}/`, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Cookie": "birthtime=0;wants_mature_content=1;lastagecheckage=1-0-1990",
+        },
+        next: { revalidate: 86400 },
+      });
+      if (!r.ok) return [];
+      const html = await r.text();
+      if (html.includes("Access Denied")) return [];
+      const matches = [...html.matchAll(/class="app_tag"[^>]*>\s*([^<]+?)\s*</g)];
+      return matches.map(m => m[1].trim()).filter(t => t.length > 1 && t !== "+");
+    } catch { return []; }
+  }
+
   async function enrichOne(appid: number) {
-    // Fetch SteamSpy (reliable) and Steam details (may 403) in parallel
+    // Fetch SteamSpy and Steam details in parallel
     const [spy, steam] = await Promise.all([
       fetchSteamSpy(appid),
       fetchSteamDetails(appid),
     ]);
 
+    // If SteamSpy has no tags, scrape from store page
+    let tags = spy.tags;
+    if (tags.length === 0) {
+      tags = await fetchStorePageTags(appid);
+    }
+
     results[appid] = {
-      tags: spy.tags,
+      tags,
       genres: steam.genres,
       categories: steam.categories,
       price_cents: spy.price,
