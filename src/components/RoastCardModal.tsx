@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useState, useCallback } from "react";
+import React, { useRef, useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import RoastCard from "./RoastCard";
 import type { RoastResult } from "@/lib/roast";
@@ -29,24 +29,50 @@ export default function RoastCardModal({
   neverPlayed, libraryValue, libraryValueNum, currencySymbol, topGames, recentGames, roast,
 }: Props) {
   const cardRef = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [shameAppId, setShameAppId] = useState<number | null>(null);
+  const [scale, setScale] = useState(0.6);
 
   const shameGame = recentGames.find(g => g.appid === shameAppId) ?? null;
   const shameImageUrl = shameAppId
     ? `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${shameAppId}/header.jpg`
     : null;
 
+  // Fit the 1200px card into the container
+  useEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const size = Math.min(window.innerWidth * 0.9, window.innerHeight * 0.65, 700);
+      setScale(size / 800);
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [open]);
+
   const capture = useCallback(async () => {
     if (!cardRef.current) return null;
     const html2canvas = (await import("html2canvas")).default;
-    return html2canvas(cardRef.current, {
-      scale: 2,
-      useCORS: true,
-      allowTaint: true,
-      backgroundColor: "#050a14",
-    });
+    // html2canvas can't parse Tailwind CSS 4's lab() color functions.
+    // Clone the card into a detached container with no stylesheets so html2canvas
+    // only sees inline styles (which use hex/rgba, not lab()).
+    const clone = cardRef.current.cloneNode(true) as HTMLElement;
+    const container = document.createElement("div");
+    container.style.cssText = "position:fixed;left:-9999px;top:0;z-index:-1;";
+    container.appendChild(clone);
+    document.body.appendChild(container);
+    try {
+      return await html2canvas(clone, {
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: "#050a14",
+      });
+    } finally {
+      document.body.removeChild(container);
+    }
   }, []);
 
   const handleDownload = useCallback(async () => {
@@ -58,6 +84,8 @@ export default function RoastCardModal({
       link.download = `${personaName.replace(/[^a-zA-Z0-9]/g, "_")}_roast.png`;
       link.href = canvas.toDataURL("image/png");
       link.click();
+    } catch (e) {
+      console.error("Download failed:", e);
     } finally { setSaving(false); }
   }, [capture, personaName]);
 
@@ -89,7 +117,8 @@ export default function RoastCardModal({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.9, y: 20 }}
             transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-            className="relative z-10 max-w-[95vw] flex flex-col items-center my-8"
+            className="relative z-10 flex flex-col items-center my-8"
+            style={{ width: Math.round(800 * scale) }}
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -99,9 +128,13 @@ export default function RoastCardModal({
               <FaTimes size={12} />
             </button>
 
-            {/* Card preview — scales to fit viewport */}
-            <div className="rounded-2xl border border-white/[0.08] shadow-2xl mb-4 overflow-hidden" style={{ width: "min(90vw, 900px)", aspectRatio: "1200/630" }}>
-              <div style={{ width: 1200, height: 630, transform: "scale(var(--card-scale))", transformOrigin: "top left", "--card-scale": "calc(min(90vw, 900px) / 1200)" } as React.CSSProperties}>
+            {/* Card — exactly fills the modal width */}
+            <div
+              ref={wrapperRef}
+              className="rounded-2xl border border-white/[0.08] shadow-2xl mb-4 overflow-hidden"
+              style={{ width: Math.round(800 * scale), height: Math.round(800 * scale) }}
+            >
+              <div style={{ transform: `scale(${scale})`, transformOrigin: "top left", width: 800, height: 800 }}>
                 <RoastCard
                   ref={cardRef}
                   personaName={personaName}
@@ -121,7 +154,7 @@ export default function RoastCardModal({
 
             {/* Game of Shame selector */}
             {recentGames.length > 0 && (
-              <div className="mb-4 w-full max-w-[min(90vw,780px)]">
+              <div className="mb-4 w-full">
                 <div className="text-xs text-gray-500 font-semibold uppercase tracking-widest mb-2">Game of Shame (optional)</div>
                 <div className="flex gap-2 overflow-x-auto pb-2" style={{ WebkitOverflowScrolling: "touch" }}>
                   <button

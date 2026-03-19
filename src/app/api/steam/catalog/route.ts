@@ -40,6 +40,7 @@ export async function GET(req: NextRequest) {
           discount_pct: it?.discount_percent ?? 0,
           price_cents: typeof it?.final_price === "number" ? it.final_price : null,
           original_price_cents: typeof it?.original_price === "number" ? it.original_price : null,
+          currencyCode: it?.currency ?? undefined,
         });
       }
     }

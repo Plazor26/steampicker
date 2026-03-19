@@ -139,7 +139,7 @@ const fadeUp = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transi
 const stagger = { show: { transition: { staggerChildren: 0.08 } } };
 
 /* ─── Sub-components ─── */
-function StatPill({ label, value, sub, color }: { label: string; value: string; sub?: string; color: string }) {
+function StatPill({ label, value, sub, color, loading }: { label: string; value: string; sub?: string; color: string; loading?: boolean }) {
   return (
     <motion.div variants={fadeUp}
       className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-6 backdrop-blur-sm text-center relative overflow-hidden group"
@@ -147,8 +147,15 @@ function StatPill({ label, value, sub, color }: { label: string; value: string; 
       <div className={`absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-br ${color} rounded-2xl`} />
       <div className="relative z-10">
         <div className="text-xs uppercase tracking-widest text-gray-500 mb-2">{label}</div>
-        <div className="text-2xl font-extrabold text-white">{value}</div>
-        {sub && <div className="text-xs text-gray-500 mt-1">{sub}</div>}
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 h-8">
+            <div className="w-4 h-4 rounded-full border-2 border-cyan-500/30 border-t-cyan-400 animate-spin" />
+            <span className="text-xs text-gray-500">Calculating…</span>
+          </div>
+        ) : (
+          <div className="text-2xl font-extrabold text-white">{value}</div>
+        )}
+        {sub && !loading && <div className="text-xs text-gray-500 mt-1">{sub}</div>}
       </div>
     </motion.div>
   );
@@ -187,7 +194,14 @@ function GameCard({ game, show2w = false, badge }: { game: GameLite; show2w?: bo
   );
 }
 
-function RecCard({ game }: { game: any }) {
+function RecCard({ game, currencyCode }: { game: any; currencyCode?: string }) {
+  const fmtPrice = (cents: number) => {
+    const code = game.currencyCode || currencyCode;
+    if (code) {
+      try { return new Intl.NumberFormat(undefined, { style: "currency", currency: code }).format(cents / 100); } catch {}
+    }
+    return `$${(cents / 100).toFixed(2)}`;
+  };
   return (
     <motion.a
       variants={fadeUp}
@@ -223,11 +237,7 @@ function RecCard({ game }: { game: any }) {
         <div className="font-semibold text-sm text-white truncate mb-1">{game.name}</div>
         <div className="text-xs text-gray-500 flex items-center justify-between">
           <span>
-            {typeof game.price_cents === "number" && game.currencyCode
-              ? new Intl.NumberFormat(undefined, { style: "currency", currency: game.currencyCode }).format(game.price_cents / 100)
-              : typeof game.price_cents === "number"
-                ? `$${(game.price_cents / 100).toFixed(2)}`
-                : "View on store"}
+            {typeof game.price_cents === "number" ? fmtPrice(game.price_cents) : "View on store"}
           </span>
           <FaExternalLinkAlt size={10} className="text-gray-600 group-hover:text-blue-400 transition-colors" />
         </div>
@@ -280,7 +290,7 @@ function GenreSidebar({ genres, selected, onSelect }: {
 }) {
   if (!genres.length) return null;
   return (
-    <div className="w-40 flex-shrink-0 space-y-1 hidden lg:block">
+    <div className="w-40 flex-shrink-0 hidden lg:block max-h-[70vh] overflow-y-auto space-y-1 pr-1 sticky top-[80px]">
       <button onClick={() => onSelect(null)} className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 ${!selected ? "bg-blue-600/20 border border-blue-500/50 text-blue-300" : "text-gray-400 hover:text-white hover:bg-white/[0.04]"}`}>All</button>
       {genres.map((g) => (
         <button key={g} onClick={() => onSelect(selected === g ? null : g)} className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 truncate ${selected === g ? "bg-blue-600/20 border border-blue-500/50 text-blue-300" : "text-gray-400 hover:text-white hover:bg-white/[0.04]"}`} title={g}>{g}</button>
@@ -318,12 +328,13 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
   const [tagUnder2h, setTagUnder2h] = useState(false);
   const [tagRecent, setTagRecent] = useState(false);
   const [minHours, setMinHours] = useState(0);
-  const [acctValue, setAcctValue] = useState<{ value: number; currency: string } | null>(null);
+  const [acctValue, setAcctValue] = useState<{ value: number; currency: string; currencyCode: string } | null>(null);
   const [priceBreakdown, setPriceBreakdown] = useState<{ appid: number; name: string; usd: string | null }[] | null>(null);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [recs, setRecs] = useState<any[]>([]);
   const [loadingRecs, setLoadingRecs] = useState(false);
   const [recErr, setRecErr] = useState<string | null>(null);
+  const [catalogCurrency, setCatalogCurrency] = useState<string | null>(null);
   const [detectedCC, setDetectedCC] = useState<string | null>(null);
   const [recTags, setRecTags] = useState<Record<number, string[]>>({});
   const [libTags, setLibTags] = useState<Record<number, string[]>>({});
@@ -389,7 +400,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
         console.log("[CURRENCY DEBUG] Response:", { cc: j?.cc, currencyCode: j?.currencyCode, value: j?.value });
 
         if (j?.ok && typeof j.value === "number") {
-          setAcctValue({ value: j.value, currency: j.currency ?? `$${j.value.toFixed(2)}` });
+          setAcctValue({ value: j.value, currency: j.currency ?? `$${j.value.toFixed(2)}`, currencyCode: j.currencyCode ?? "USD" });
           if (Array.isArray(j.breakdown)) setPriceBreakdown(j.breakdown);
         }
       } catch (e) {
@@ -435,7 +446,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     for (const tags of Object.values(recTags)) {
       for (const t of tags) counts[t] = (counts[t] || 0) + 1;
     }
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 40).map(([t]) => t);
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t]) => t);
   }, [recTags]);
 
   const libTagList = useMemo(() => {
@@ -443,7 +454,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     for (const tags of Object.values(libTags)) {
       for (const t of tags) counts[t] = (counts[t] || 0) + 1;
     }
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 40).map(([t]) => t);
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t]) => t);
   }, [libTags]);
 
   /* Recommendations */
@@ -455,6 +466,9 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
       try {
         const cc = profile?.country || detectedCC || guessCCFromNavigator();
         const catalogItems = await fetchCatalog(cc);
+        // Grab currency code from the first item that has one
+        const detectedCurr = catalogItems.find(c => c.currencyCode)?.currencyCode ?? null;
+        if (detectedCurr) setCatalogCurrency(detectedCurr);
         const ownedAppIds = new Set((lib.ownedGames || []).map((g) => g.appid));
         const candidates: CandidateGame[] = catalogItems
           .filter((c) => !ownedAppIds.has(c.appid))
@@ -662,9 +676,10 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
               />
               <StatPill
                 label="Library Value"
-                value={acctValue ? acctValue.currency : "—"}
+                value={acctValue ? acctValue.currency : ""}
                 sub={acctValue ? "estimated" : undefined}
                 color="from-cyan-500/10 to-transparent"
+                loading={!acctValue && isOk}
               />
             </div>
           </motion.section>
@@ -743,9 +758,9 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
                 <GenreSidebar genres={recTagList} selected={selectedRecTag} onSelect={setSelectedRecTag} />
                 <motion.div
                   initial="hidden" animate="show" variants={stagger}
-                  className="flex-1 grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
+                  className="flex-1 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 auto-rows-min content-start"
                 >
-                  {filteredRecs.map((g: any) => <RecCard key={g.appid} game={g} />)}
+                  {filteredRecs.map((g: any) => <RecCard key={g.appid} game={g} currencyCode={catalogCurrency || acctValue?.currencyCode} />)}
                   {!filteredRecs.length && (
                     <p className="text-gray-500 text-sm col-span-full">
                       {selectedRecTag
