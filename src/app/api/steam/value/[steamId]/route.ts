@@ -11,8 +11,8 @@ import { NextResponse, type NextRequest } from "next/server";
  * - If we hit a 403, we stop and return partial results
  */
 
-const CONCURRENCY = 2;
-const BATCH_DELAY = 300;
+const CONCURRENCY = 1;       // one at a time
+const BATCH_DELAY = 1200;    // 1.2s between requests — stays under Steam's rate limit
 
 // In-memory cache — survives across requests in dev & prod
 const cache = new Map<string, { cents: number; curr: string; ts: number }>();
@@ -46,6 +46,7 @@ export async function GET(
 
   type P = { cents: number; curr: string } | null;
   let blocked = false;
+  let consecutiveFails = 0;
 
   async function fetchPrice(appid: number): Promise<P> {
     // Always check cache first, even if Steam is blocked
@@ -61,9 +62,10 @@ export async function GET(
         `https://store.steampowered.com/api/appdetails?appids=${appid}&filters=price_overview&cc=${cc}`,
         { next: { revalidate: 86400 } }
       );
-      if (r.status === 403 || !r.ok) { blocked = true; return null; }
+      if (r.status === 403 || !r.ok) { consecutiveFails++; if (consecutiveFails >= 2) blocked = true; return null; }
       const text = await r.text();
-      if (text.startsWith("<")) { blocked = true; return null; }
+      if (text.startsWith("<")) { consecutiveFails++; if (consecutiveFails >= 2) blocked = true; return null; }
+      consecutiveFails = 0;
       const pov = JSON.parse(text)?.[String(appid)]?.data?.price_overview;
       if (!pov) return null; // free game
       const cents = typeof pov.initial === "number" ? pov.initial : pov.final;
@@ -82,20 +84,31 @@ export async function GET(
 
   console.log("[VALUE] Cached:", cachedCount, "/", appids.length, "Need to fetch:", appids.length - cachedCount);
 
-  // Process in tiny batches with delays
+  // Process one at a time with delays between uncached fetches
   const results: P[] = new Array(appids.length).fill(null);
-  for (let i = 0; i < appids.length; i += CONCURRENCY) {
-    const batch = appids.slice(i, i + CONCURRENCY);
-    await Promise.all(batch.map((id, j) => fetchPrice(id).then(r => { results[i + j] = r; })));
-    // Only delay if we actually made network requests (not cached) and more to go
-    if (!blocked && i + CONCURRENCY < appids.length) {
-      const anyUncached = batch.some(id => !cache.has(`${id}:${cc}`) || Date.now() - cache.get(`${id}:${cc}`)!.ts >= CACHE_TTL);
-      if (anyUncached) await new Promise(r => setTimeout(r, BATCH_DELAY));
+  for (let i = 0; i < appids.length; i++) {
+    const id = appids[i];
+    const wasCached = cache.has(`${id}:${cc}`) && Date.now() - cache.get(`${id}:${cc}`)!.ts < CACHE_TTL;
+    results[i] = await fetchPrice(id);
+    // Delay after uncached fetches to avoid rate limiting
+    if (!wasCached && !blocked && i < appids.length - 1) {
+      await new Promise(r => setTimeout(r, BATCH_DELAY));
     }
   }
 
   const counted = results.filter(r => r != null).length;
-  const currencyCode = results.find(r => r?.curr)?.curr || "USD";
+  const isPartial = counted < appids.length * 0.9; // partial if <90% priced
+  const currencyCode = results.find(r => r?.curr)?.curr || null;
+
+  // If we got zero results or no currency, don't return fake data
+  if (counted === 0 || !currencyCode) {
+    console.log("[VALUE] FAILED: counted:", counted, "blocked:", blocked);
+    return NextResponse.json({
+      ok: true, cc, currency: null, currencyCode: null, value: null,
+      counted, owned: appids.length, partial: true,
+    }, { status: 200 });
+  }
+
   const totalCents = results.reduce<number>((s, r) => s + (r?.cents || 0), 0);
   const value = totalCents / 100;
 
@@ -106,20 +119,11 @@ export async function GET(
     formatted = `${currencyCode} ${value.toFixed(2)}`;
   }
 
-  const breakdown = appids.map((appid, i) => ({
-    appid,
-    name: all.find((g: any) => g.appid === appid)?.name ?? `App ${appid}`,
-    cents: results[i]?.cents ?? null,
-    local: results[i] ? (results[i]!.cents / 100).toFixed(2) : null,
-  })).filter(g => g.cents != null && g.cents > 0);
-
-  console.log("[VALUE] Result:", currencyCode, value, "counted:", counted, "/", appids.length, blocked ? "(stopped early — 403)" : "");
+  console.log("[VALUE] Result:", currencyCode, value, "counted:", counted, "/", appids.length, isPartial ? "(partial)" : "(complete)");
 
   return NextResponse.json({
     ok: true, cc, currency: formatted, currencyCode, value,
-    counted, owned: appids.length,
-    partial: blocked && counted < appids.length,
-    breakdown,
+    counted, owned: appids.length, partial: isPartial,
   }, {
     status: 200,
     headers: { "cache-control": "s-maxage=300, stale-while-revalidate=600" },

@@ -42,6 +42,20 @@ type ApiResponse = ApiOk | ApiErr;
 
 export const dynamic = "force-dynamic";
 
+/* ─── LocalStorage cache ─── */
+function lsGet<T>(key: string, maxAge = 86400000): T | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const { ts, data } = JSON.parse(raw);
+    if (Date.now() - ts > maxAge) { localStorage.removeItem(key); return null; }
+    return data as T;
+  } catch { return null; }
+}
+function lsSet(key: string, data: unknown) {
+  try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data })); } catch {}
+}
+
 /* ─── Helpers ─── */
 function guessCCFromNavigator(): string | null {
   if (typeof navigator === "undefined") return null;
@@ -195,12 +209,11 @@ function GameCard({ game, show2w = false, badge }: { game: GameLite; show2w?: bo
 }
 
 function RecCard({ game, currencyCode }: { game: any; currencyCode?: string }) {
-  const fmtPrice = (cents: number) => {
+  const fmtPrice = (cents: number): string | null => {
     const code = game.currencyCode || currencyCode;
-    if (code) {
-      try { return new Intl.NumberFormat(undefined, { style: "currency", currency: code }).format(cents / 100); } catch {}
-    }
-    return `$${(cents / 100).toFixed(2)}`;
+    if (!code) return null; // don't show price without confirmed currency
+    try { return new Intl.NumberFormat(undefined, { style: "currency", currency: code }).format(cents / 100); } catch {}
+    return null;
   };
   return (
     <motion.a
@@ -237,7 +250,7 @@ function RecCard({ game, currencyCode }: { game: any; currencyCode?: string }) {
         <div className="font-semibold text-sm text-white truncate mb-1">{game.name}</div>
         <div className="text-xs text-gray-500 flex items-center justify-between">
           <span>
-            {typeof game.price_cents === "number" ? fmtPrice(game.price_cents) : "View on store"}
+            {typeof game.price_cents === "number" ? (fmtPrice(game.price_cents) ?? "View on store") : "View on store"}
           </span>
           <FaExternalLinkAlt size={10} className="text-gray-600 group-hover:text-blue-400 transition-colors" />
         </div>
@@ -360,48 +373,59 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
   const profile: Profile | null = isOk ? (data as ApiOk).profile : null;
   const lib: Library | null = isOk ? (data as ApiOk).library : null;
 
-  /* Fetch account value — waits for BOTH profile AND CC detection */
+  /* Detect CC + Fetch account value with localStorage cache */
   const [ccReady, setCcReady] = useState(false);
   useEffect(() => {
-    // Mark CC as ready once detection finishes (success or failure)
     let alive = true;
     (async () => {
-      // If navigator already gives a non-US result, use it immediately
       const nav = guessCCFromNavigator();
       if (nav && nav !== "US") { if (alive) { setDetectedCC(nav); setCcReady(true); } return; }
-      // Otherwise wait for IP detection
       const ip = await detectCCFromIP();
-      if (alive) {
-        if (ip) setDetectedCC(ip);
-        setCcReady(true);
-      }
+      if (alive) { if (ip) setDetectedCC(ip); setCcReady(true); }
     })();
     return () => { alive = false; };
   }, []);
 
   useEffect(() => {
-    if (!isOk || !ccReady) return; // wait for BOTH profile and CC
+    if (!isOk || !ccReady) return;
     let alive = true;
+    const cc = profile?.country || detectedCC || "US";
+    const cacheKey = `sv:${steamId}:${cc}`;
+
+    // Check localStorage first
+    const cached = lsGet<{ value: number; currency: string; currencyCode: string }>(cacheKey);
+    if (cached) { setAcctValue(cached); return; }
+
     (async () => {
-      try {
-        const cc = profile?.country || detectedCC || "US";
-        const url = `/api/steam/value/${steamId}?cc=${cc}`;
+      // Retry until we get a complete result with regional currency
+      for (let attempt = 0; attempt < 5 && alive; attempt++) {
+        try {
+          const r = await fetch(`/api/steam/value/${steamId}?cc=${cc}`, { cache: "no-store" });
+          if (!alive || !r.ok) return;
+          const j = await r.json().catch(() => null);
+          if (!j?.ok) return;
 
-        console.log("[CURRENCY DEBUG] profile.country:", profile?.country ?? "null");
-        console.log("[CURRENCY DEBUG] detectedCC:", detectedCC ?? "null");
-        console.log("[CURRENCY DEBUG] Final CC:", cc);
-        console.log("[CURRENCY DEBUG] Fetching:", url);
+          // Skip if no currency detected (Steam is fully blocked)
+          if (!j.currencyCode || j.value == null) {
+            // Exponential backoff: 30s, 60s, 120s, 240s, 480s
+            const wait = 30000 * Math.pow(2, attempt);
+            console.log(`[VALUE] Steam blocked (attempt ${attempt + 1}/5), waiting ${wait / 1000}s...`);
+            await new Promise(r => setTimeout(r, wait));
+            continue;
+          }
 
-        const r = await fetch(url, { cache: "no-store" });
-        if (!alive || !r.ok) return;
-        const j = await r.json().catch(() => null);
-        console.log("[CURRENCY DEBUG] Response:", { cc: j?.cc, currencyCode: j?.currencyCode, value: j?.value });
+          const result = { value: j.value, currency: j.currency, currencyCode: j.currencyCode };
 
-        if (j?.ok && typeof j.value === "number") {
-          setAcctValue({ value: j.value, currency: j.currency ?? `$${j.value.toFixed(2)}`, currencyCode: j.currencyCode ?? "USD" });
-        }
-      } catch (e) {
-        console.error("[CURRENCY DEBUG] Error:", e);
+          if (!j.partial) {
+            lsSet(cacheKey, result);
+            if (alive) setAcctValue(result);
+            return;
+          }
+          // Partial — show what we have but keep trying
+          if (alive) setAcctValue(result);
+          console.log(`[VALUE] Partial (${j.counted}/${j.owned}), retrying in 15s...`);
+          await new Promise(r => setTimeout(r, 15000));
+        } catch { break; }
       }
     })();
     return () => { alive = false; };
@@ -515,32 +539,21 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     return () => { alive = false; };
   }, [lib, profile, detectedCC]);
 
-  /* Enrich library games for tag filters (background, batched) */
+  /* Enrich library games for tag filters (uses localStorage cache) */
   useEffect(() => {
     if (!allGames.length) return;
     let alive = true;
     (async () => {
-      const BATCH = 30;
-      for (let i = 0; i < allGames.length && alive; i += BATCH) {
-        const batch = allGames.slice(i, i + BATCH).map(g => g.appid);
-        try {
-          const r = await fetch("/api/steam/enrich", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ appids: batch }),
-          });
-          const d = await r.json();
-          if (d?.ok && alive) {
-            const chunk: Record<number, string[]> = {};
-            for (const [id, info] of Object.entries(d.items)) {
-              const t = (info as any).tags || [];
-              const g = (info as any).genres || [];
-              chunk[Number(id)] = [...new Set([...t, ...g])];
-            }
-            setLibTags(prev => ({ ...prev, ...chunk }));
-          }
-        } catch {}
+      // fetchEnrich checks localStorage first — only fetches uncached games
+      const enriched = await fetchEnrich(allGames.map(g => g.appid));
+      if (!alive) return;
+      const tagMap: Record<number, string[]> = {};
+      for (const [id, info] of Object.entries(enriched)) {
+        const t = (info as any).tags || [];
+        const g = (info as any).genres || [];
+        tagMap[Number(id)] = [...new Set([...t, ...g])];
       }
+      setLibTags(tagMap);
     })();
     return () => { alive = false; };
   }, [allGames]);
