@@ -104,35 +104,16 @@ async function fetchFromPartnerPage(): Promise<SaleEventData[]> {
   const events: SaleEventData[] = [];
   const currentYear = new Date().getFullYear();
 
-  // Look for patterns like: <strong>Spring Sale</strong> | March 19 - 26, 2026
-  // Or: Spring Sale: March 19 - 26, 2026
-  // Or table rows with sale name and date range
-  const patterns = [
-    // <strong>Name</strong> | dates
-    /<strong>([^<]+)<\/strong>\s*\|?\s*([A-Z][a-z]+\s+\d{1,2}[\s\S]*?\d{4})/gi,
-    // Name: dates or Name - dates in plain text
-    /(?:^|\n)\s*((?:Spring|Summer|Autumn|Winter|Halloween)\s+Sale|Steam\s+Next\s+Fest|Lunar\s+New\s+Year)[:\s\-|]+([A-Z][a-z]+\s+\d{1,2}[^<\n]*?\d{4})/gi,
-  ];
-
-  for (const pattern of patterns) {
-    let match;
-    while ((match = pattern.exec(html)) !== null) {
-      const name = match[1].trim();
-      const dateStr = match[2].trim();
-      const range = parseDateRange(dateStr, currentYear);
-      if (range) {
-        // Avoid duplicates
-        if (!events.some(e => e.name === name && e.start === range.start)) {
-          events.push({
-            name,
-            type: classifyEvent(name),
-            start: range.start,
-            end: range.end,
-            estimated: false,
-            source: "valve",
-          });
-        }
-      }
+  // Partner page uses format: "Spring Sale | March 19 - 26, 2026"
+  // Also matches: "Steam Next Fest | February 23 - March 2, 2026"
+  const salePat = /((?:Spring|Summer|Autumn|Winter|Halloween)\s+Sale|Steam\s+Next\s+Fest|Lunar\s+New\s+Year\s*(?:Sale)?)\s*\|\s*([A-Z][a-z]+\s+\d{1,2}[^<\n]*?\d{4})/gi;
+  let match;
+  while ((match = salePat.exec(html)) !== null) {
+    const name = match[1].replace(/^Steam\s+/, "").trim();
+    const dateStr = match[2].trim();
+    const range = parseDateRange(dateStr, currentYear);
+    if (range) {
+      addEvent(events, name, range, "valve");
     }
   }
 
@@ -238,15 +219,28 @@ function addEvent(events: SaleEventData[], name: string, range: { start: string;
     .replace(/\s*V\s+Fest$/i, " Fest")         // "Scream V Fest" -> "Scream Fest"
     .trim();
 
+  // Normalize: if name doesn't end in Sale/Fest, skip it (noise)
+  if (!/(?:Sale|Fest)$/i.test(name)) {
+    // Try appending "Fest" if it's clearly an event name
+    if (name.length > 3 && !/\d/.test(name)) {
+      name = name + " Fest";
+    } else {
+      return;
+    }
+  }
+
   // Deduplicate by overlapping date range (not just exact match)
   const startMs = new Date(range.start).getTime();
   const endMs = new Date(range.end).getTime();
   const isDupe = events.some(e => {
-    if (e.name !== name) return false;
+    // Match by exact name or by name being a substring (Scream vs Scream Fest)
+    const nameMatch = e.name === name ||
+      e.name.replace(/ Fest$/, "") === name.replace(/ Fest$/, "");
+    if (!nameMatch) return false;
     const es = new Date(e.start).getTime();
     const ee = new Date(e.end).getTime();
-    // Overlapping ranges = duplicate
-    return startMs <= ee && endMs >= es;
+    // Overlapping or adjacent (within 3 days)
+    return startMs <= ee + 86400000 * 3 && endMs >= es - 86400000 * 3;
   });
 
   if (!isDupe) {
