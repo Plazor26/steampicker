@@ -56,7 +56,9 @@ export async function GET(
       if (!entry?.success) return null;
       const pov = entry?.data?.price_overview;
       if (!pov) return null;
-      const final = typeof pov.final === "number" ? pov.final : null; // minor units
+      // Use initial (base/non-sale) price, fall back to final if initial is missing
+      const final = typeof pov.initial === "number" ? pov.initial
+        : typeof pov.final === "number" ? pov.final : null; // minor units
       const currencyCode = typeof pov.currency === "string" ? pov.currency : null;
       return { cents: final, currencyCode };
     } catch {

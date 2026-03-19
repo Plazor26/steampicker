@@ -94,13 +94,19 @@ const EVENT_COLORS = {
 
 /* ─── Calendar component (fetches from /api/steam/sales) ─── */
 function SaleCalendar() {
-  const today = new Date();
+  const [now, setNow] = useState(() => new Date());
   const [offset, setOffset] = useState(0); // month offset from current
   const [events, setEvents] = useState<SaleEventData[]>([]);
   const [liveCheck, setLiveCheck] = useState<SalesPayload["liveCheck"] | null>(null);
   const [dataSource, setDataSource] = useState<"valve" | "fallback" | null>(null);
   const [hoveredEvent, setHoveredEvent] = useState<{ ev: SaleEventData; x: number; y: number } | null>(null);
   const calRef = useRef<HTMLDivElement>(null);
+
+  // Tick every second so live event detection is exact
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -118,12 +124,28 @@ function SaleCalendar() {
     return () => ctrl.abort();
   }, []);
 
-  const viewYear  = new Date(today.getFullYear(), today.getMonth() + offset, 1).getFullYear();
-  const viewMonth = new Date(today.getFullYear(), today.getMonth() + offset, 1).getMonth();
+  // Find the currently live event (checked to the second)
+  const liveEvent = useMemo(() => {
+    const nowMs = now.getTime();
+    return events.find(ev => {
+      const s = new Date(ev.start + "T00:00:00").getTime();
+      const e = new Date(ev.end + "T23:59:59").getTime();
+      return nowMs >= s && nowMs <= e;
+    }) ?? null;
+  }, [events, now]);
+
+  const navigateToEvent = (ev: SaleEventData) => {
+    const evStart = new Date(ev.start + "T00:00:00");
+    const monthDiff = (evStart.getFullYear() - now.getFullYear()) * 12 + (evStart.getMonth() - now.getMonth());
+    setOffset(monthDiff);
+  };
+
+  const viewYear  = new Date(now.getFullYear(), now.getMonth() + offset, 1).getFullYear();
+  const viewMonth = new Date(now.getFullYear(), now.getMonth() + offset, 1).getMonth();
   const totalDays = daysInMonth(viewYear, viewMonth);
   const startDay  = startDayOfWeek(viewYear, viewMonth);
 
-  // Build a map: day number → events active on that day
+  // Build a map: day number -> events active on that day
   const dayEvents = useMemo(() => {
     const map: Record<number, SaleEventData[]> = {};
     for (const ev of events) {
@@ -141,7 +163,7 @@ function SaleCalendar() {
   }, [events, viewYear, viewMonth, totalDays]);
 
   const isToday = (d: number) =>
-    viewYear === today.getFullYear() && viewMonth === today.getMonth() && d === today.getDate();
+    viewYear === now.getFullYear() && viewMonth === now.getMonth() && d === now.getDate();
 
   const handleDayHover = (d: number, e: React.MouseEvent) => {
     const evs = dayEvents[d];
@@ -164,9 +186,16 @@ function SaleCalendar() {
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
         </button>
-        <h3 className="text-lg font-bold text-white">
-          {MONTH_NAMES[viewMonth]} {viewYear}
-        </h3>
+        <div className="text-center">
+          <h3 className="text-lg font-bold text-white">
+            {MONTH_NAMES[viewMonth]} {viewYear}
+          </h3>
+          {offset !== 0 && (
+            <button onClick={() => setOffset(0)} className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors">
+              Back to today
+            </button>
+          )}
+        </div>
         <button
           onClick={() => setOffset(o => o + 1)}
           className="p-2 rounded-lg bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] transition-colors text-gray-400 hover:text-white"
@@ -175,15 +204,18 @@ function SaleCalendar() {
         </button>
       </div>
 
-      {/* Live sale indicator */}
-      {liveCheck?.isMajorSaleActive && (
-        <div className="mb-4 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-300 text-xs font-semibold">
+      {/* Live sale indicator — only when an event is actually live right now */}
+      {liveEvent && (
+        <button
+          onClick={() => navigateToEvent(liveEvent)}
+          className="mb-4 w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-300 text-xs font-semibold hover:bg-green-500/15 transition-colors cursor-pointer"
+        >
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
             <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
           </span>
-          A major Steam sale is LIVE right now
-        </div>
+          {liveEvent.name} is LIVE right now
+        </button>
       )}
 
       {/* Day headers */}
@@ -206,7 +238,7 @@ function SaleCalendar() {
           const hasEvent = evs.length > 0;
           const topEvent = evs[0];
           const colors = topEvent ? EVENT_COLORS[topEvent.type] : null;
-          const isPast = new Date(viewYear, viewMonth, d) < new Date(today.getFullYear(), today.getMonth(), today.getDate());
+          const isPast = new Date(viewYear, viewMonth, d) < new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
           return (
             <div
@@ -214,15 +246,18 @@ function SaleCalendar() {
               className={`
                 aspect-square rounded-lg flex flex-col items-center justify-center relative cursor-default transition-all duration-150
                 ${hasEvent ? `${colors!.bg} ${colors!.border} border` : "hover:bg-white/[0.02]"}
-                ${isToday(d) ? "ring-2 ring-blue-400/60 ring-offset-1 ring-offset-[#050a14]" : ""}
+                ${isToday(d) ? "ring-2 ring-blue-400 ring-offset-2 ring-offset-[#050a14] bg-blue-500/10" : ""}
                 ${isPast && !hasEvent ? "opacity-30" : ""}
               `}
               onMouseEnter={(e) => handleDayHover(d, e)}
               onMouseLeave={() => setHoveredEvent(null)}
             >
-              <span className={`text-sm font-medium ${hasEvent ? colors!.text : isToday(d) ? "text-blue-300" : "text-gray-400"}`}>
+              <span className={`text-sm font-medium ${hasEvent ? colors!.text : isToday(d) ? "text-blue-200 font-bold" : "text-gray-400"}`}>
                 {d}
               </span>
+              {isToday(d) && !hasEvent && (
+                <span className="text-[8px] text-blue-400 font-bold leading-none">TODAY</span>
+              )}
               {/* Event dots */}
               {hasEvent && (
                 <div className="flex gap-0.5 mt-0.5">
