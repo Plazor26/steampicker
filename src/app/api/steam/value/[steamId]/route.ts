@@ -9,7 +9,7 @@ import { NextResponse, type NextRequest } from "next/server";
  * No more rate limiting.
  */
 
-const BATCH_SIZE = 20;
+const BATCH_SIZE = 100;   // Steam accepts up to 100 appids per request
 const BATCH_DELAY = 1500; // 1.5s between batches
 
 // In-memory cache (persists across requests)
