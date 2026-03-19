@@ -49,9 +49,9 @@ export async function GET(req: NextRequest) {
             },
             cache: "no-store",
           });
-          if (!r.ok) return;
+          if (!r.ok) { console.log(`[CATALOG] MoreLikeThis ${anchorId}: HTTP ${r.status}`); return; }
           const html = await r.text();
-          if (html.includes("Access Denied")) return;
+          if (html.includes("Access Denied")) { console.log(`[CATALOG] MoreLikeThis ${anchorId}: Access Denied`); return; }
 
           // Get anchor game name from the page or SteamSpy
           let anchorName = `Game ${anchorId}`;
@@ -65,6 +65,8 @@ export async function GET(req: NextRequest) {
           const appids = [...html.matchAll(/data-ds-appid="(\d+)"/g)]
             .map(m => parseInt(m[1]))
             .filter(id => !isNaN(id) && id !== anchorId);
+
+          console.log(`[CATALOG] Anchor ${anchorName} (${anchorId}): ${appids.length} similar games`);
 
           for (const appid of appids) {
             const existing = gameData.get(appid);
@@ -90,6 +92,8 @@ export async function GET(req: NextRequest) {
 
       // Enrich with names and review data from SteamSpy
       const toEnrich = [...gameData.keys()];
+      let enrichedCount = 0;
+      let enrichFailCount = 0;
       const BATCH = 50;
       for (let i = 0; i < Math.min(toEnrich.length, 500); i += BATCH) {
         const batch = toEnrich.slice(i, i + BATCH);

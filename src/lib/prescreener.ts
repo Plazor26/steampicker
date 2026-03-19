@@ -86,10 +86,17 @@ export function pickAnchors(games: GameLite[], enrichMap: Record<number, Enriche
   const scored = games
     .filter(g => {
       const e = enrichMap[g.appid];
-      // If recently played with >2h, ALWAYS include — it's clearly a real game
-      if ((g.hours2w ?? 0) > 0 && g.hours > 2) return true;
       if (!e) return false;
+      // ALWAYS filter tools, even if recently played
       if ((e.tags || []).some(t => TOOL_TAGS.has(t))) return false;
+      if ((e.genres || []).some(t => TOOL_TAGS.has(t))) return false;
+      const nameLower = g.name.toLowerCase();
+      if (["wallpaper engine", "vroid", "rpg maker", "game maker", "construct",
+           "desktop", "engine", "studio", "editor", "creator", "maker"].some(s => nameLower.includes(s))) return false;
+      // Must have >2h total to be an anchor (under refund = not committed)
+      if (g.hours < 2) return false;
+      // If recently played with >2h, include even without tags
+      if ((g.hours2w ?? 0) > 0) return true;
       // Only filter by tag count if NOT recently played
       if ((e.tags || []).length + (e.genres || []).length < 2) return false;
       return true;
