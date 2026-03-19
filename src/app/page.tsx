@@ -487,16 +487,19 @@ export default function Home() {
           className="w-full max-w-xl bg-white/[0.04] backdrop-blur-xl border border-white/[0.1] rounded-2xl p-6 shadow-[0_0_80px_rgba(59,130,246,0.12)]"
         >
           {/* Steam login */}
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.97 }}
-            onClick={handleSteamLogin}
-            disabled={submitting === "login"}
-            className="w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl font-bold text-base bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-cyan-500 text-white shadow-lg shadow-blue-600/30 transition-all duration-200 disabled:opacity-60 mb-4"
-          >
-            <FaSteam size={20} />
-            {submitting === "login" ? "Redirecting…" : "Login with Steam"}
-          </motion.button>
+          <div className="mb-4">
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={handleSteamLogin}
+              disabled={submitting === "login"}
+              className="w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl font-bold text-base bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-cyan-500 text-white shadow-lg shadow-blue-600/30 transition-all duration-200 disabled:opacity-60"
+            >
+              <FaSteam size={20} />
+              {submitting === "login" ? "Redirecting…" : "Sign in through Steam"}
+            </motion.button>
+            <p className="text-center text-xs text-gray-400 mt-2">This site is not associated with Valve Corp.</p>
+          </div>
 
           <div className="flex items-center gap-3 mb-4">
             <div className="flex-1 h-px bg-white/[0.08]" />
