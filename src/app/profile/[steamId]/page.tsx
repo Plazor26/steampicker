@@ -65,21 +65,23 @@ function guessCCFromNavigator(): string | null {
 }
 
 async function detectCCFromIP(): Promise<string | null> {
-  // Try multiple free IP geolocation services with fallbacks
-  const endpoints = [
-    { url: "https://freeipapi.com/api/json", parse: (_: string, j: any) => j?.countryCode?.toUpperCase() },
-    { url: "https://ipapi.co/country/", parse: (t: string) => t.trim().toUpperCase() },
-  ];
-  for (const ep of endpoints) {
-    try {
-      const r = await fetch(ep.url, { cache: "no-store" });
-      if (!r.ok) continue;
-      const text = await r.text();
-      let code: string | undefined;
-      try { code = ep.parse(text, JSON.parse(text)); } catch { code = ep.parse(text, null); }
-      if (code && /^[A-Z]{2}$/.test(code)) return code;
-    } catch { continue; }
-  }
+  // Use our server-side geo proxy (avoids CORS issues)
+  try {
+    const r = await fetch("/api/steam/geo");
+    if (r.ok) {
+      const j = await r.json();
+      if (j.cc && /^[A-Z]{2}$/.test(j.cc)) return j.cc;
+    }
+  } catch {}
+  // Fallback: navigator locale
+  try {
+    const loc = Intl.DateTimeFormat().resolvedOptions().locale || navigator.language || "";
+    const parts = loc.split("-");
+    if (parts.length >= 2) {
+      const cc = parts[parts.length - 1].toUpperCase();
+      if (/^[A-Z]{2}$/.test(cc)) return cc;
+    }
+  } catch {}
   return null;
 }
 function headerURL(appid: number) {
@@ -216,8 +218,12 @@ function GameCard({ game, show2w = false, badge }: { game: GameLite; show2w?: bo
 function RecCard({ game, currencyCode }: { game: any; currencyCode?: string }) {
   const fmtPrice = (cents: number): string | null => {
     const code = game.currencyCode || currencyCode;
-    if (!code) return null; // don't show price without confirmed currency
-    try { return new Intl.NumberFormat(undefined, { style: "currency", currency: code }).format(cents / 100); } catch {}
+    if (!code) return null;
+    try {
+      // Use en-IN for INR so it shows ₹ not $, etc.
+      const locale = code === "INR" ? "en-IN" : code === "EUR" ? "de-DE" : code === "GBP" ? "en-GB" : code === "JPY" ? "ja-JP" : undefined;
+      return new Intl.NumberFormat(locale, { style: "currency", currency: code }).format(cents / 100);
+    } catch {}
     return null;
   };
   return (
@@ -511,7 +517,8 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
         const enriched = await fetchEnrich(pool.map(g => g.appid));
         const anchors = pickAnchors(pool, enriched, 10);
 
-        console.log("[RECS] Anchor games:", anchors.map(g => `${g.name} (${g.hours}h)`).join(", "));
+        console.log("[RECS] Pool size:", pool.length, "Enriched:", Object.keys(enriched).length);
+        console.log("[RECS] Anchor games:", anchors.map(g => `${g.name} (${g.hours}h, recent:${g.hours2w ?? 0}h)`).join(", "));
 
         // 2. Fetch catalog — server gets Steam's "More Like This" for each anchor
         const anchorsParam = `&anchors=${anchors.map(g => g.appid).join(",")}`;
@@ -531,46 +538,49 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
 
         // 4. Fetch prices (one batch, proven to work) + fix missing names
         if (results.length > 0) {
-          // Price fetch — single batch, price_overview only (reliable at 30 appids)
+          // Price fetch via our server proxy (Steam has no CORS)
           try {
-            const priceRes = await fetch(
-              `https://store.steampowered.com/api/appdetails?appids=${results.map((r: any) => r.appid).join(",")}&filters=price_overview&cc=${cc || "US"}`
-            );
+            const appidStr = results.map((r: any) => r.appid).join(",");
+            console.log("[RECS] Fetching prices for", results.length, "games via proxy");
+            const priceRes = await fetch(`/api/steam/prices?appids=${appidStr}&cc=${cc || "US"}`);
             if (priceRes.ok) {
-              const text = await priceRes.text();
-              if (!text.startsWith("<")) {
-                const priceData = JSON.parse(text);
+              const pj = await priceRes.json();
+              if (pj.ok && pj.data) {
+                let priced = 0;
                 results = results.map((r: any) => {
-                  const pov = priceData?.[String(r.appid)]?.data?.price_overview;
+                  const entry = pj.data[String(r.appid)];
+                  if (!entry?.success) return r;
+                  const pov = entry.data?.price_overview;
                   if (!pov) return r;
+                  priced++;
                   return { ...r, price_cents: pov.final, discount_pct: pov.discount_percent, currencyCode: pov.currency };
                 });
+                console.log("[RECS] Applied prices to", priced, "games");
                 const curr = results.find((r: any) => r.currencyCode)?.currencyCode;
                 if (curr) setCatalogCurrency(curr);
               }
             }
-          } catch {}
+          } catch (e) { console.error("[RECS] Price fetch error:", e); }
 
-          // Fix missing names — fetch individually (only a few will need this)
+          // Fix missing names via server proxy
           const needNames = results.filter((r: any) => r.name?.startsWith("App "));
+          console.log("[RECS] Games missing names:", needNames.length);
           if (needNames.length > 0) {
-            await Promise.all(needNames.map(async (r: any) => {
-              try {
-                // Use a minimal filter to avoid huge responses
-                const res = await fetch(
-                  `https://store.steampowered.com/api/appdetails?appids=${r.appid}&filters=basic&cc=${cc || "US"}`
-                );
-                if (!res.ok) return;
-                const text = await res.text();
-                if (text.startsWith("<")) return;
-                const d = JSON.parse(text)?.[String(r.appid)]?.data;
-                if (!d) return;
-                if (d.type && d.type !== "game" && d.type !== "dlc") { r.name = "__REMOVE__"; return; }
-                r.name = d.name || r.name;
-                r.header = d.header_image || r.header;
-              } catch {}
-            }));
-            results = results.filter((r: any) => r.name !== "__REMOVE__");
+            try {
+              const nameRes = await fetch(`/api/steam/prices?appids=${needNames.map((r: any) => r.appid).join(",")}&cc=${cc || "US"}&filter=basic`);
+              if (nameRes.ok) {
+                const nj = await nameRes.json();
+                if (nj.ok && nj.data) {
+                  results = results.map((r: any) => {
+                    if (!r.name?.startsWith("App ")) return r;
+                    const d = nj.data[String(r.appid)]?.data;
+                    if (!d) return r;
+                    if (d.type && d.type !== "game" && d.type !== "dlc") return null;
+                    return { ...r, name: d.name || r.name, header: d.header_image || r.header };
+                  }).filter(Boolean) as typeof results;
+                }
+              }
+            } catch {}
           }
         }
 
