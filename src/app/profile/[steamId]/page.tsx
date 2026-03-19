@@ -315,10 +315,10 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
   const [loadingRecs, setLoadingRecs] = useState(false);
   const [recErr, setRecErr] = useState<string | null>(null);
   const [detectedCC, setDetectedCC] = useState<string | null>(null);
-  const [recGenres, setRecGenres] = useState<Record<number, string[]>>({});
-  const [libGenres, setLibGenres] = useState<Record<number, string[]>>({});
-  const [selectedRecGenre, setSelectedRecGenre] = useState<string | null>(null);
-  const [selectedLibGenre, setSelectedLibGenre] = useState<string | null>(null);
+  const [recTags, setRecTags] = useState<Record<number, string[]>>({});
+  const [libTags, setLibTags] = useState<Record<number, string[]>>({});
+  const [selectedRecTag, setSelectedRecTag] = useState<string | null>(null);
+  const [selectedLibTag, setSelectedLibTag] = useState<string | null>(null);
 
   /* Fetch profile */
   useEffect(() => {
@@ -355,10 +355,8 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
         if (!alive || !r.ok) return;
         const j = await r.json().catch(() => null);
         if (j?.ok && typeof j.value === "number") {
-          const formatted = j.currencyCode
-            ? new Intl.NumberFormat(undefined, { style: "currency", currency: j.currencyCode }).format(j.value)
-            : `${j.currency ?? ""} ${j.value.toLocaleString()}`;
-          setAcctValue({ value: j.value, currency: formatted });
+          // API returns pre-formatted currency string
+          setAcctValue({ value: j.value, currency: j.currency ?? `$${j.value.toFixed(2)}` });
         }
       } catch {}
     })();
@@ -385,37 +383,37 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     if (tagNeverPlayed) list = list.filter((g) => g.hours <= 0);
     if (tagUnder2h) list = list.filter((g) => g.hours > 0 && g.hours < 2);
     if (tagRecent) list = list.filter((g) => (g.hours2w ?? 0) > 0);
-    if (selectedLibGenre) list = list.filter((g) => (libGenres[g.appid] || []).includes(selectedLibGenre));
+    if (selectedLibTag) list = list.filter((g) => (libTags[g.appid] || []).includes(selectedLibTag));
     switch (sortBy) {
       case "name": list = [...list].sort((a, b) => a.name.localeCompare(b.name)); break;
       case "recent": list = [...list].sort((a, b) => (b.hours2w ?? 0) - (a.hours2w ?? 0)); break;
       default: list = [...list].sort((a, b) => b.hours - a.hours);
     }
     return list;
-  }, [allGames, ownedOnly, query, minHours, tagNeverPlayed, tagUnder2h, tagRecent, sortBy, ownedSet, selectedLibGenre, libGenres]);
+  }, [allGames, ownedOnly, query, minHours, tagNeverPlayed, tagUnder2h, tagRecent, sortBy, ownedSet, selectedLibTag, libTags]);
 
-  /* Filtered recs by genre */
+  /* Filtered recs by tag */
   const filteredRecs = useMemo(() => {
-    if (!selectedRecGenre) return recs;
-    return recs.filter((g: any) => (recGenres[g.appid] || []).includes(selectedRecGenre));
-  }, [recs, selectedRecGenre, recGenres]);
+    if (!selectedRecTag) return recs;
+    return recs.filter((g: any) => (recTags[g.appid] || []).includes(selectedRecTag));
+  }, [recs, selectedRecTag, recTags]);
 
-  /* Extract unique genres sorted by frequency */
-  const recGenreList = useMemo(() => {
+  /* Extract unique tags sorted by frequency (limit to top 25 to keep sidebar clean) */
+  const recTagList = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const genres of Object.values(recGenres)) {
-      for (const g of genres) counts[g] = (counts[g] || 0) + 1;
+    for (const tags of Object.values(recTags)) {
+      for (const t of tags) counts[t] = (counts[t] || 0) + 1;
     }
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([g]) => g);
-  }, [recGenres]);
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 25).map(([t]) => t);
+  }, [recTags]);
 
-  const libGenreList = useMemo(() => {
+  const libTagList = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const genres of Object.values(libGenres)) {
-      for (const g of genres) counts[g] = (counts[g] || 0) + 1;
+    for (const tags of Object.values(libTags)) {
+      for (const t of tags) counts[t] = (counts[t] || 0) + 1;
     }
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([g]) => g);
-  }, [libGenres]);
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 25).map(([t]) => t);
+  }, [libTags]);
 
   /* Recommendations */
   useEffect(() => {
@@ -433,7 +431,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
         const results = await prescreen(lib.allGames as GameLite[], candidates, 30);
         if (!alive) return;
         setRecs(results);
-        // Enrich recs to get genres
+        // Enrich recs to get tags
         if (results.length) {
           try {
             const enrichRes = await fetch("/api/steam/enrich", {
@@ -443,11 +441,15 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
             });
             const enrichData = await enrichRes.json();
             if (alive && enrichData?.ok) {
-              const genres: Record<number, string[]> = {};
+              const tags: Record<number, string[]> = {};
               for (const [id, info] of Object.entries(enrichData.items)) {
-                genres[Number(id)] = (info as any).genres || [];
+                // Merge community tags + genres, deduplicated
+                const t = (info as any).tags || [];
+                const g = (info as any).genres || [];
+                const merged = [...new Set([...t, ...g])];
+                tags[Number(id)] = merged;
               }
-              setRecGenres(genres);
+              setRecTags(tags);
             }
           } catch {}
         }
@@ -457,14 +459,12 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     return () => { alive = false; };
   }, [lib, profile, detectedCC]);
 
-  /* Enrich library games for genre filters (background, batched) */
+  /* Enrich library games for tag filters (background, batched) */
   useEffect(() => {
     if (!allGames.length) return;
     let alive = true;
     (async () => {
-      // Batch in chunks of 50 to avoid overwhelming the API
-      const BATCH = 50;
-      const genreMap: Record<number, string[]> = {};
+      const BATCH = 30;
       for (let i = 0; i < allGames.length && alive; i += BATCH) {
         const batch = allGames.slice(i, i + BATCH).map(g => g.appid);
         try {
@@ -474,11 +474,14 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
             body: JSON.stringify({ appids: batch }),
           });
           const d = await r.json();
-          if (d?.ok) {
+          if (d?.ok && alive) {
+            const chunk: Record<number, string[]> = {};
             for (const [id, info] of Object.entries(d.items)) {
-              genreMap[Number(id)] = (info as any).genres || [];
+              const t = (info as any).tags || [];
+              const g = (info as any).genres || [];
+              chunk[Number(id)] = [...new Set([...t, ...g])];
             }
-            if (alive) setLibGenres(prev => ({ ...prev, ...genreMap }));
+            setLibTags(prev => ({ ...prev, ...chunk }));
           }
         } catch {}
       }
@@ -654,7 +657,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
 
             {!loadingRecs && !recErr && (
               <div className="flex gap-6">
-                <GenreSidebar genres={recGenreList} selected={selectedRecGenre} onSelect={setSelectedRecGenre} />
+                <GenreSidebar genres={recTagList} selected={selectedRecTag} onSelect={setSelectedRecTag} />
                 <motion.div
                   initial="hidden" animate="show" variants={stagger}
                   className="flex-1 grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
@@ -662,8 +665,8 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
                   {filteredRecs.map((g: any) => <RecCard key={g.appid} game={g} />)}
                   {!filteredRecs.length && (
                     <p className="text-gray-500 text-sm col-span-full">
-                      {selectedRecGenre
-                        ? `No recommendations in "${selectedRecGenre}".`
+                      {selectedRecTag
+                        ? `No recommendations in "${selectedRecTag}".`
                         : "No recommendations yet — your library may be empty or private."}
                     </p>
                   )}
@@ -712,7 +715,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
 
             {/* Sidebar + Game grid */}
             <div className="flex gap-6">
-              <GenreSidebar genres={libGenreList} selected={selectedLibGenre} onSelect={setSelectedLibGenre} />
+              <GenreSidebar genres={libTagList} selected={selectedLibTag} onSelect={setSelectedLibTag} />
               <div className="flex-1 max-h-[72vh] overflow-y-auto pr-1 rounded-xl">
                 <motion.div
                   initial="hidden" animate="show" variants={stagger}
