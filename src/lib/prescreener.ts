@@ -70,16 +70,47 @@ const IGNORE_TAGS = new Set([
   "Remote Play Together", "Family Sharing",
 ]);
 
+/** Fetch enrichment with localStorage cache (7-day TTL) */
 export async function fetchEnrich(appids: number[]): Promise<Record<number, Enriched>> {
   if (!appids.length) return {};
-  const res = await fetch("/api/steam/enrich", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ appids }),
-  });
-  if (!res.ok) return {};
-  const j = await res.json().catch(() => null);
-  return j?.items || {};
+
+  const result: Record<number, Enriched> = {};
+  const uncached: number[] = [];
+
+  // Check localStorage for cached enrichment
+  for (const id of appids) {
+    try {
+      const raw = localStorage.getItem(`e:${id}`);
+      if (raw) {
+        const { ts, d } = JSON.parse(raw);
+        if (Date.now() - ts < 7 * 86400000) { result[id] = d; continue; }
+      }
+    } catch {}
+    uncached.push(id);
+  }
+
+  if (uncached.length === 0) return result;
+
+  // Fetch uncached in batches of 40
+  for (let i = 0; i < uncached.length; i += 40) {
+    const batch = uncached.slice(i, i + 40);
+    try {
+      const res = await fetch("/api/steam/enrich", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ appids: batch }),
+      });
+      if (!res.ok) continue;
+      const j = await res.json().catch(() => null);
+      if (!j?.items) continue;
+      for (const [id, data] of Object.entries(j.items)) {
+        result[Number(id)] = data as Enriched;
+        try { localStorage.setItem(`e:${id}`, JSON.stringify({ ts: Date.now(), d: data })); } catch {}
+      }
+    } catch {}
+  }
+
+  return result;
 }
 
 /** Extract top N tag names from an enrichment map, sorted by frequency */
@@ -245,31 +276,48 @@ export async function prescreen(
     ).values(),
   ].slice(0, 120);
 
-  // Enrich taste pool and candidates in parallel
-  const [ownedEnrich, candidateEnrich] = await Promise.all([
-    fetchEnrich(tastePool.map((g) => g.appid)),
-    fetchEnrich(candidates.map((c) => c.appid)),
-  ]);
-
-  // Build user DNA
+  // Phase 1: Enrich taste pool (cached in localStorage, fast on repeat visits)
+  const ownedEnrich = await fetchEnrich(tastePool.map((g) => g.appid));
   const dna = buildUserDNA(tastePool, ownedEnrich);
 
-  // Filter out junk
-  const filtered = candidates.filter((c) => {
-    if (!c.name || !c.header) return false;
+  // Phase 2: Quick rough-score ALL candidates using only catalog data (no enrichment)
+  // This is instant — no API calls
+  const roughScored = candidates
+    .filter(c => c.name && c.header)
+    .map(c => {
+      // Use any SteamSpy data that came with the catalog
+      const spy = c as any;
+      let roughScore = 0;
+      // Discount boost
+      roughScore += Math.min(0.3, (spy.discount_pct ?? 0) / 100 * 0.3);
+      // Review quality from catalog's SteamSpy data
+      const pos = spy.spy_positive ?? 0;
+      const neg = spy.spy_negative ?? 0;
+      const total = pos + neg;
+      if (total > 0) roughScore += (pos / total) * 0.3;
+      // Prefer games with more reviews (popularity)
+      if (total > 1000) roughScore += 0.2;
+      else if (total > 100) roughScore += 0.1;
+      return { ...c, roughScore };
+    })
+    .sort((a, b) => b.roughScore - a.roughScore);
+
+  // Phase 3: Enrich ONLY top 80 candidates (not all 800+)
+  const topCandidates = roughScored.slice(0, 80);
+  const candidateEnrich = await fetchEnrich(topCandidates.map(c => c.appid));
+
+  // Phase 4: Precise scoring with full tag similarity
+  const filtered = topCandidates.filter((c) => {
     const e = candidateEnrich[c.appid];
     const cats = new Set(e?.categories || []);
     if (cats.has("Demo") || cats.has("Application") || cats.has("SteamVR Tool")) return false;
-    // Don't recommend very old games unless heavily discounted
     if (e?.released_year) {
       const age = nowYear - e.released_year;
-      const bigSale = (e.discount_pct || 0) >= 50;
-      if (age > 10 && !bigSale) return false;
+      if (age > 10 && (e.discount_pct || 0) < 50) return false;
     }
     return true;
   });
 
-  // Score all candidates
   const scored = filtered.map((c) => {
     const e = candidateEnrich[c.appid];
     const { score, matchReasons } = scoreCandidate(c, e, dna, nowYear);
