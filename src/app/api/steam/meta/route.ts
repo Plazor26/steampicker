@@ -24,30 +24,34 @@ function zonedToUTC(
 }
 
 /**
- * 2025 seasonal sale windows (official press/Valve timing @ 10 AM Pacific).
- * Starts/ends are constructed *at the storefront rollover time* (10:00 PT).
- * Sources: Valve/Steam news & press coverage. Sales start/end at 10 AM PT. 
- * (Examples: “offers end at 10 AM Pacific”; SteamDB shows UTC equivalents.) 
+ * Seasonal sale windows (official Valve/Steamworks timing @ 10 AM Pacific).
+ * Sources: Valve Steamworks partner announcements + press coverage.
  */
-const SALE_WINDOWS_2025 = [
-  { label: "Spring Sale", start: zonedToUTC(2025, 2, 13), end: zonedToUTC(2025, 2, 20) }, // Mar 13–20, 10:00 PT
-  { label: "Summer Sale", start: zonedToUTC(2025, 5, 26), end: zonedToUTC(2025, 6, 10) }, // Jun 26–Jul 10, 10:00 PT
-  { label: "Autumn Sale", start: zonedToUTC(2025, 8, 29), end: zonedToUTC(2025, 9, 6)  }, // Sep 29–Oct 6, 10:00 PT
-  { label: "Winter Sale", start: zonedToUTC(2025,11,18), end: zonedToUTC(2026, 0, 5)  }, // Dec 18–Jan 5, 10:00 PT
+const SALE_WINDOWS = [
+  // 2025
+  { label: "Spring Sale", start: zonedToUTC(2025, 2, 13), end: zonedToUTC(2025, 2, 20) },
+  { label: "Summer Sale", start: zonedToUTC(2025, 5, 26), end: zonedToUTC(2025, 6, 10) },
+  { label: "Autumn Sale", start: zonedToUTC(2025, 8, 29), end: zonedToUTC(2025, 9, 6)  },
+  { label: "Winter Sale", start: zonedToUTC(2025,11,18), end: zonedToUTC(2026, 0, 5)  },
+  // 2026 (official Steamworks announcements)
+  { label: "Spring Sale", start: zonedToUTC(2026, 2, 19), end: zonedToUTC(2026, 2, 26) },
+  { label: "Summer Sale", start: zonedToUTC(2026, 5, 25), end: zonedToUTC(2026, 6, 9)  },
+  { label: "Autumn Sale", start: zonedToUTC(2026, 9, 1),  end: zonedToUTC(2026, 9, 8)  },
+  { label: "Winter Sale", start: zonedToUTC(2026,11,17), end: zonedToUTC(2027, 0, 4)  },
 ];
 
 function activeOrNextSale(nowUTC: Date) {
-  // Active → countdown to END
-  for (const w of SALE_WINDOWS_2025) {
+  // Active -> countdown to END
+  for (const w of SALE_WINDOWS) {
     if (nowUTC >= w.start && nowUTC <= w.end) {
       return { phase: "active" as const, label: w.label, target: w.end };
     }
   }
-  // Upcoming → countdown to START
-  const upcoming = SALE_WINDOWS_2025.find(w => nowUTC < w.start);
+  // Upcoming -> countdown to START
+  const upcoming = SALE_WINDOWS.find(w => nowUTC < w.start);
   if (upcoming) return { phase: "upcoming" as const, label: upcoming.label, target: upcoming.start };
-  // If past Winter 2025, point to a reasonable 2026 Spring placeholder (10:00 PT)
-  const spring2026 = zonedToUTC(2026, 2, 19); // adjust if Valve updates official date
+  // If past all known windows, point to next Spring placeholder
+  const spring2026 = zonedToUTC(2026, 2, 19);
   return { phase: "upcoming" as const, label: "Spring Sale", target: spring2026 };
 }
 
@@ -67,7 +71,7 @@ async function fetchSpecialsTotal(country = "US", lang = "en"): Promise<number |
   return typeof j?.total_count === "number" ? j.total_count : null;
 }
 
-/** Fallback: “featuredcategories” specials list length (limited, but safe). */
+/** Fallback: "featuredcategories" specials list length (limited, but safe). */
 async function fetchSpecialsFallback(country = "US", lang = "en"): Promise<number | null> {
   const r = await fetch(
     `https://store.steampowered.com/api/featuredcategories?cc=${country}&l=${lang}`,

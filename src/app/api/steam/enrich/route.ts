@@ -15,6 +15,8 @@ type Enriched = {
   price_cents: number | null;
   discount_pct: number;
   released_year: number | null;
+  review_count: number | null;
+  metacritic_score: number | null;
 };
 
 export async function POST(req: NextRequest) {
@@ -37,7 +39,7 @@ export async function POST(req: NextRequest) {
 
   async function fetchOne(appid: number): Promise<void> {
     // Keep fields minimal to avoid giant payloads
-    const url = `https://store.steampowered.com/api/appdetails?appids=${appid}&filters=categories,genres,release_date,price_overview`;
+    const url = `https://store.steampowered.com/api/appdetails?appids=${appid}&filters=categories,genres,release_date,price_overview,metacritic,recommendations`;
     try {
       const r = await fetch(url, {
         // Steam public, let CDN cache it
@@ -55,6 +57,8 @@ export async function POST(req: NextRequest) {
           price_cents: null,
           discount_pct: 0,
           released_year: null,
+          review_count: null,
+          metacritic_score: null,
         };
         return;
       }
@@ -80,6 +84,8 @@ export async function POST(req: NextRequest) {
       const pov = data?.price_overview;
       const price_cents = Number.isFinite(pov?.final) ? Number(pov.final) : null;
       const discount_pct = Number.isFinite(pov?.discount_percent) ? Number(pov.discount_percent) : 0;
+      const review_count = Number.isFinite(data?.recommendations?.total) ? Number(data.recommendations.total) : null;
+      const metacritic_score = Number.isFinite(data?.metacritic?.score) ? Number(data.metacritic.score) : null;
 
       results[appid] = {
         genres,
@@ -87,6 +93,8 @@ export async function POST(req: NextRequest) {
         price_cents,
         discount_pct,
         released_year: year,
+        review_count,
+        metacritic_score,
       };
     } catch {
       // network errors etc
@@ -96,6 +104,8 @@ export async function POST(req: NextRequest) {
         price_cents: null,
         discount_pct: 0,
         released_year: null,
+        review_count: null,
+        metacritic_score: null,
       };
     }
   }
