@@ -4,7 +4,8 @@ import React, { useRef, useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import RoastCard from "./RoastCard";
 import type { RoastResult } from "@/lib/roast";
-import { FaDownload, FaCopy, FaTimes, FaCheck } from "react-icons/fa";
+import { FaDownload, FaCopy, FaTimes, FaCheck, FaTwitter, FaRedditAlien, FaDiscord } from "react-icons/fa";
+import { SiBluesky } from "react-icons/si";
 
 type ShameGame = { appid: number; name: string; hours: number };
 
@@ -186,21 +187,46 @@ export default function RoastCardModal({
             )}
 
             {/* Action buttons */}
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-center gap-2">
               <button
                 onClick={handleDownload}
                 disabled={saving}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm transition-colors disabled:opacity-60"
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm transition-colors disabled:opacity-60"
               >
-                <FaDownload size={14} />
-                {saving ? "Saving…" : "Download PNG"}
+                <FaDownload size={13} />
+                {saving ? "Saving…" : "Download"}
               </button>
               <button
                 onClick={handleCopy}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white/[0.06] border border-white/[0.1] hover:bg-white/[0.1] text-gray-300 font-semibold text-sm transition-colors"
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.06] border border-white/[0.1] hover:bg-white/[0.1] text-gray-300 font-semibold text-sm transition-colors"
               >
-                {copied ? <><FaCheck size={14} className="text-green-400" /> Copied!</> : <><FaCopy size={14} /> Copy to Clipboard</>}
+                {copied ? <><FaCheck size={13} className="text-green-400" /> Copied!</> : <><FaCopy size={13} /> Copy</>}
               </button>
+
+              <div className="w-px h-6 bg-white/[0.08] mx-1 hidden sm:block" />
+
+              {/* Share links */}
+              <a
+                href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet roasted at steampicker.plazor.xyz`)}`}
+                target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors"
+              >
+                <FaTwitter size={14} /> X
+              </a>
+              <a
+                href={`https://bsky.app/intent/compose?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet roasted at steampicker.plazor.xyz`)}`}
+                target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors"
+              >
+                <SiBluesky size={14} /> Bsky
+              </a>
+              <a
+                href={`https://reddit.com/submit?title=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" (Grade: ${roast.grade})`)}&url=${encodeURIComponent("https://steampicker.plazor.xyz")}`}
+                target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors"
+              >
+                <FaRedditAlien size={14} /> Reddit
+              </a>
             </div>
           </motion.div>
         </motion.div>

@@ -1,13 +1,22 @@
 "use client";
 
 /**
- * Content-based recommendation engine.
+ * Content-based recommendation engine v2.
+ *
+ * Uses SteamSpy community tags as PRIMARY signal (much more granular than
+ * Steam's official genres). Tags like "Souls-like", "Metroidvania", "Roguelike",
+ * "Open World", "Story Rich" capture taste far better than broad genres.
  *
  * Pipeline:
- * 1. Build a "User DNA" tag vector from owned games, weighted by log(playtime).
- * 2. Score each unowned candidate by cosine similarity to the User DNA.
- * 3. Boost by review quality, discount, and recency.
- * 4. Return top N candidates.
+ * 1. Build "User DNA" tag vector from owned games, weighted by playtime.
+ *    - Community tags are the main signal (weighted 1.0)
+ *    - Steam genres are secondary (weighted 0.5)
+ *    - Categories are filtered to only gameplay-relevant ones (weighted 0.3)
+ *    - Recently played games get a 3x boost (strong current-interest signal)
+ * 2. Score candidates via cosine similarity to User DNA.
+ * 3. Boost by review quality, discount, recency.
+ * 4. Penalize tag-similarity to already-recommended games (diversity).
+ * 5. Return top N.
  */
 
 export type GameLite = {
@@ -19,13 +28,15 @@ export type GameLite = {
 };
 
 export type Enriched = {
-  genres: string[];
-  categories: string[];
+  tags?: string[];        // SteamSpy community tags
+  genres: string[];       // Steam official genres
+  categories: string[];   // Steam categories
   price_cents: number | null;
   discount_pct: number;
   released_year: number | null;
   review_count?: number | null;
   metacritic_score?: number | null;
+  initialprice_cents?: number | null;
 };
 
 export type CandidateGame = {
@@ -42,6 +53,23 @@ export type PrescreenResult = (CandidateGame & {
   matchReasons?: string[];
 })[];
 
+// Categories that actually describe gameplay (filter out noise like "Stats", "Cloud")
+const GAMEPLAY_CATS = new Set([
+  "Single-player", "Multi-player", "Co-op", "Online Co-Op", "Local Co-Op",
+  "Online PvP", "Local PvP", "Cross-Platform Multiplayer", "MMO",
+  "Full controller support", "Partial Controller Support",
+  "VR Support", "VR Only", "VR Supported",
+]);
+
+// Tags to IGNORE (too generic or meta)
+const IGNORE_TAGS = new Set([
+  "Singleplayer", "Multiplayer", "Great Soundtrack", "Moddable",
+  "Steam Achievements", "Steam Cloud", "Steam Trading Cards",
+  "Steam Workshop", "Full controller support", "Partial Controller Support",
+  "Remote Play on Phone", "Remote Play on Tablet", "Remote Play on TV",
+  "Remote Play Together", "Family Sharing",
+]);
+
 export async function fetchEnrich(appids: number[]): Promise<Record<number, Enriched>> {
   if (!appids.length) return {};
   const res = await fetch("/api/steam/enrich", {
@@ -54,11 +82,33 @@ export async function fetchEnrich(appids: number[]): Promise<Record<number, Enri
   return j?.items || {};
 }
 
+/** Extract top N tag names from an enrichment map, sorted by frequency */
+export function extractTopTags(enrichMap: Record<number, Enriched>, games: GameLite[], n = 8): string[] {
+  const counts: Record<string, number> = {};
+  for (const g of games) {
+    const e = enrichMap[g.appid];
+    if (!e) continue;
+    const w = g.hours > 0 ? Math.sqrt(g.hours) : 0.2;
+    const mult = (g.hours2w ?? 0) > 0 ? 3 : 1;
+    for (const tag of (e.tags || []).filter(t => !IGNORE_TAGS.has(t)).slice(0, 8)) {
+      counts[tag] = (counts[tag] || 0) + w * mult;
+    }
+  }
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, n).map(([t]) => t);
+}
+
 /**
  * Build a weighted tag vector from the user's library.
- * Weighted by log(1 + hours) so mega-played games don't dominate.
- * Recent games get a 2.5x boost as a strong active-interest signal.
- * The resulting vector is L2-normalized so cosine similarity = dot product.
+ *
+ * Tag sources (in priority order):
+ * 1. SteamSpy community tags (t:tag) — weight 1.0
+ * 2. Steam genres (g:genre) — weight 0.6
+ * 3. Gameplay-relevant categories (c:cat) — weight 0.3
+ *
+ * Playtime weighting: sqrt(hours) gives diminishing returns without
+ * letting 5000h games completely dominate.
+ * Recently played: 3x multiplier (strong active interest signal).
+ * Never played (0h): 0.2 weight (bought but didn't play = mild interest).
  */
 function buildUserDNA(
   ownedGames: GameLite[],
@@ -69,10 +119,34 @@ function buildUserDNA(
   for (const g of ownedGames) {
     const e = enrichMap[g.appid];
     if (!e) continue;
-    const w = Math.log1p(g.hours) + (g.hours2w ? Math.log1p(g.hours2w) * 2.5 : 0);
+
+    // Playtime weight
+    let w = g.hours > 0 ? Math.sqrt(g.hours) : 0.2;
+    // Recently played boost
+    if (g.hours2w && g.hours2w > 0) w *= 3;
+
     if (w <= 0) continue;
-    for (const genre of e.genres) vec[`g:${genre}`] = (vec[`g:${genre}`] || 0) + w;
-    for (const cat of e.categories) vec[`c:${cat}`] = (vec[`c:${cat}`] || 0) + w;
+
+    // Community tags (primary signal)
+    const tags = (e.tags || []).filter(t => !IGNORE_TAGS.has(t));
+    // Top tags get more weight (SteamSpy returns them sorted by votes)
+    for (let i = 0; i < tags.length; i++) {
+      const tagW = w * (1.0 - i * 0.03); // slight decay for lower-ranked tags
+      if (tagW <= 0) break;
+      vec[`t:${tags[i]}`] = (vec[`t:${tags[i]}`] || 0) + tagW;
+    }
+
+    // Steam genres (secondary)
+    for (const genre of e.genres) {
+      vec[`g:${genre}`] = (vec[`g:${genre}`] || 0) + w * 0.6;
+    }
+
+    // Gameplay categories (tertiary, filtered)
+    for (const cat of e.categories) {
+      if (GAMEPLAY_CATS.has(cat)) {
+        vec[`c:${cat}`] = (vec[`c:${cat}`] || 0) + w * 0.3;
+      }
+    }
   }
 
   // L2-normalize
@@ -83,8 +157,7 @@ function buildUserDNA(
 }
 
 /**
- * Score one candidate game against the user DNA using cosine similarity.
- * Returns a score in [0, 1] and the top matched genre labels.
+ * Score one candidate game against the user DNA.
  */
 function scoreCandidate(
   candidate: CandidateGame,
@@ -92,65 +165,67 @@ function scoreCandidate(
   dna: Record<string, number>,
   nowYear: number
 ): { score: number; matchReasons: string[] } {
-  // 1. Content similarity (primary signal)
-  let similarity = 0;
+  // 1. Content similarity (cosine)
+  let dot = 0;
+  let candidateMagSq = 0;
   const matched: string[] = [];
+
   if (e && Object.keys(dna).length > 0) {
-    let dot = 0;
-    let candidateMagSq = 0;
-    for (const genre of e.genres) {
-      const w = dna[`g:${genre}`] || 0;
+    // Tags (primary)
+    const tags = (e.tags || []).filter(t => !IGNORE_TAGS.has(t));
+    for (const tag of tags) {
+      const w = dna[`t:${tag}`] || 0;
       dot += w;
       candidateMagSq += 1;
-      if (w > 0.01) matched.push(genre);
+      if (w > 0.005 && matched.length < 5) matched.push(tag);
     }
+    // Genres
+    for (const genre of e.genres) {
+      const w = dna[`g:${genre}`] || 0;
+      dot += w * 0.6;
+      candidateMagSq += 0.36;
+    }
+    // Categories
     for (const cat of e.categories) {
-      dot += dna[`c:${cat}`] || 0;
-      candidateMagSq += 1;
+      if (GAMEPLAY_CATS.has(cat)) {
+        dot += (dna[`c:${cat}`] || 0) * 0.3;
+        candidateMagSq += 0.09;
+      }
     }
-    const candidateMag = Math.sqrt(candidateMagSq);
-    similarity = candidateMag > 0 ? Math.min(1, dot / candidateMag) : 0;
   }
 
-  // 2. Review quality
-  let qualityScore = 0.4;
+  const candidateMag = Math.sqrt(candidateMagSq);
+  const similarity = candidateMag > 0 ? Math.min(1, dot / candidateMag) : 0;
+
+  // 2. Review quality (0-1)
+  let quality = 0.3;
   if (e?.metacritic_score != null && e.metacritic_score > 0) {
-    qualityScore = e.metacritic_score / 100;
+    quality = e.metacritic_score / 100;
   } else if (e?.review_count != null && e.review_count > 0) {
-    qualityScore = Math.min(0.85, 0.4 + 0.45 * (Math.log10(e.review_count) / 5));
+    quality = Math.min(0.9, 0.3 + 0.6 * (Math.log10(e.review_count) / 5));
   }
 
-  // 3. Discount
-  const discountScore = Math.min(1, (e?.discount_pct ?? candidate.discount_pct ?? 0) / 100);
+  // 3. Discount boost
+  const discount = Math.min(1, (e?.discount_pct ?? candidate.discount_pct ?? 0) / 100);
 
-  // 4. Recency
-  let recencyScore = 0.5;
+  // 4. Recency (newer = slightly better)
+  let recency = 0.5;
   if (e?.released_year) {
-    recencyScore = 1 - Math.min(1, Math.max(0, nowYear - e.released_year) / 10);
+    recency = 1 - Math.min(1, Math.max(0, nowYear - e.released_year) / 8);
   }
 
-  // 5. Light price penalty
-  let pricePenalty = 0;
-  const priceCents = e?.price_cents ?? candidate.price_cents;
-  if (priceCents != null) {
-    pricePenalty = Math.min(0.15, Math.max(0, (priceCents / 100 - 30) / 200));
-  }
-
+  // Final weighted score — similarity is king (65%)
   const score =
-    0.55 * similarity +
-    0.20 * qualityScore +
-    0.15 * discountScore +
-    0.10 * recencyScore -
-    pricePenalty;
+    0.65 * similarity +
+    0.15 * quality +
+    0.12 * discount +
+    0.08 * recency;
 
-  return { score: Math.max(0, Math.min(1, score)), matchReasons: matched.slice(0, 3) };
+  return { score: Math.max(0, Math.min(1, score)), matchReasons: matched };
 }
 
 /**
  * Main prescreener.
- * @param ownedGames - user's library (used ONLY to build taste profile, never returned as recs)
- * @param candidates - unowned store games to score and rank
- * @param topN - max results to return
  */
 export async function prescreen(
   ownedGames: GameLite[],
@@ -161,14 +236,14 @@ export async function prescreen(
 
   const nowYear = new Date().getFullYear();
 
-  // For taste profiling: use top 50 most-played + all recently-played (max 80 total)
+  // Taste pool: top 100 most-played + all recently-played (deduped, max 120)
   const sortedOwned = [...ownedGames].sort((a, b) => b.hours - a.hours);
   const recentlyPlayed = ownedGames.filter((g) => (g.hours2w ?? 0) > 0);
   const tastePool = [
     ...new Map(
-      [...sortedOwned.slice(0, 50), ...recentlyPlayed].map((g) => [g.appid, g])
+      [...sortedOwned.slice(0, 100), ...recentlyPlayed].map((g) => [g.appid, g])
     ).values(),
-  ].slice(0, 80);
+  ].slice(0, 120);
 
   // Enrich taste pool and candidates in parallel
   const [ownedEnrich, candidateEnrich] = await Promise.all([
@@ -179,27 +254,59 @@ export async function prescreen(
   // Build user DNA
   const dna = buildUserDNA(tastePool, ownedEnrich);
 
-  // Filter out demos/software/very old games
+  // Filter out junk
   const filtered = candidates.filter((c) => {
     if (!c.name || !c.header) return false;
     const e = candidateEnrich[c.appid];
     const cats = new Set(e?.categories || []);
     if (cats.has("Demo") || cats.has("Application") || cats.has("SteamVR Tool")) return false;
+    // Don't recommend very old games unless heavily discounted
     if (e?.released_year) {
       const age = nowYear - e.released_year;
       const bigSale = (e.discount_pct || 0) >= 50;
-      if (age > 12 && !bigSale) return false;
+      if (age > 10 && !bigSale) return false;
     }
     return true;
   });
 
-  // Score and sort
+  // Score all candidates
   const scored = filtered.map((c) => {
     const e = candidateEnrich[c.appid];
     const { score, matchReasons } = scoreCandidate(c, e, dna, nowYear);
     return { ...c, score, enriched: e, matchReasons };
   });
 
+  // Sort by score
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topN);
+
+  // Diversity pass: penalize if too similar to already-selected games
+  const selected: typeof scored = [];
+  const selectedTagSets: Set<string>[] = [];
+
+  for (const game of scored) {
+    if (selected.length >= topN) break;
+
+    // Check tag overlap with already-selected games
+    const gameTags = new Set((game.enriched?.tags || []).filter(t => !IGNORE_TAGS.has(t)).slice(0, 10));
+    let maxOverlap = 0;
+    for (const prevTags of selectedTagSets) {
+      let overlap = 0;
+      for (const t of gameTags) if (prevTags.has(t)) overlap++;
+      const overlapPct = gameTags.size > 0 ? overlap / gameTags.size : 0;
+      maxOverlap = Math.max(maxOverlap, overlapPct);
+    }
+
+    // If > 80% tag overlap with any selected game, apply penalty
+    if (maxOverlap > 0.8) {
+      game.score *= 0.7;
+    }
+
+    selected.push(game);
+    selectedTagSets.push(gameTags);
+  }
+
+  // Re-sort after diversity penalty
+  selected.sort((a, b) => b.score - a.score);
+
+  return selected;
 }
