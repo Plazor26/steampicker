@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useState, use } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { scoreAndRank, buildUserDNA, fetchEnrich, extractTopTags, type CandidateGame } from "@/lib/prescreener";
+import { scoreAndRank, fetchEnrich, pickAnchors, type CandidateGame } from "@/lib/prescreener";
 import { generateRoast, type RoastInput } from "@/lib/roast";
 import RoastCardModal from "@/components/RoastCardModal";
 import { FaSteam, FaArrowLeft, FaExternalLinkAlt, FaFire } from "react-icons/fa";
@@ -130,6 +130,8 @@ function normalizeCatalog(cat: any): Array<{
       currencyCode: c.currencyCode ?? c.currency ?? undefined,
       matchedTags: Array.isArray(c.matchedTags) ? c.matchedTags : undefined,
       reviewScore: typeof c.reviewScore === "number" ? c.reviewScore : undefined,
+      similarTo: Array.isArray(c.similarTo) ? c.similarTo : undefined,
+      steamSimilarCount: typeof c.steamSimilarCount === "number" ? c.steamSimilarCount : undefined,
     };
   }).filter(Boolean) as any[];
 }
@@ -476,7 +478,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t]) => t);
   }, [libTags]);
 
-  /* Recommendations: enrich taste → catalog with tags → score (no client-side SteamSpy) */
+  /* Recommendations: find games similar to the user's favorites via Steam's algorithm */
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -485,34 +487,83 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
       try {
         const cc = profile?.country || detectedCC || guessCCFromNavigator();
 
-        // 1. Enrich user's top games to extract taste tags (localStorage-cached)
-        const sortedOwned = [...(lib.allGames as GameLite[])].sort((a, b) => b.hours - a.hours);
-        const recentlyPlayed = (lib.allGames as GameLite[]).filter(g => (g.hours2w ?? 0) > 0);
-        const tastePool = [...new Map([...sortedOwned.slice(0, 80), ...recentlyPlayed].map(g => [g.appid, g])).values()].slice(0, 100);
-        const tasteEnrich = await fetchEnrich(tastePool.map(g => g.appid));
-        const dna = buildUserDNA(tastePool, tasteEnrich);
+        // 1. Build anchor pool: merge recentGames (has hours2w) into allGames
+        const allOwned = lib.allGames as GameLite[];
+        const recentGames = lib.recentGames || [];
+        // Merge hours2w from recentGames into allGames
+        const recentMap = new Map(recentGames.map(g => [g.appid, g]));
+        const merged = allOwned.map(g => {
+          const recent = recentMap.get(g.appid);
+          return recent ? { ...g, hours2w: recent.hours2w } : g;
+        });
+        // Also add any recentGames not in allGames
+        for (const rg of recentGames) {
+          if (!merged.find(g => g.appid === rg.appid)) merged.push(rg);
+        }
+        const sortedOwned = [...merged].sort((a, b) => b.hours - a.hours);
+        const recentlyPlayed = merged.filter(g => (g.hours2w ?? 0) > 0);
+        const lowHours = merged.filter(g => g.hours < 2 && g.hours >= 0).slice(0, 20);
+        const pool = [...new Map([
+          ...sortedOwned.slice(0, 40),
+          ...recentlyPlayed,
+          ...lowHours,
+        ].map(g => [g.appid, g])).values()].slice(0, 80);
+        const enriched = await fetchEnrich(pool.map(g => g.appid));
+        const anchors = pickAnchors(pool, enriched, 10);
 
-        console.log("[RECS] User tags:", dna.topTags.join(", "));
-        console.log("[RECS] Synergies:", dna.synergies.map(([a, b]) => `${a}+${b}`).join(", "));
+        console.log("[RECS] Anchor games:", anchors.map(g => `${g.name} (${g.hours}h)`).join(", "));
 
-        // 2. Fetch personalized catalog (server fetches SteamSpy tag lists)
-        const tagsParam = dna.topTags.length > 0 ? `&tags=${encodeURIComponent(dna.topTags.join(","))}` : "";
-        const catalogItems = await fetchCatalog(cc, tagsParam);
+        // 2. Fetch catalog — server gets Steam's "More Like This" for each anchor
+        const anchorsParam = `&anchors=${anchors.map(g => g.appid).join(",")}`;
+        const catalogItems = await fetchCatalog(cc, anchorsParam);
         const detectedCurr = catalogItems.find((c: any) => c.currencyCode)?.currencyCode ?? null;
         if (detectedCurr) setCatalogCurrency(detectedCurr);
 
-        // 3. Score candidates — pure client-side, instant
+        // 3. Score by similarity overlap
         const ownedAppIds = new Set((lib.ownedGames || []).map((g) => g.appid));
-        const results = scoreAndRank(catalogItems as CandidateGame[], dna, ownedAppIds, 30);
+        let results = scoreAndRank(catalogItems as CandidateGame[], ownedAppIds, anchors.length, 30);
+        if (!alive) return;
+
+        // 4. Fetch regional prices + names before displaying
+        if (results.length > 0) {
+          try {
+            // Fetch full details (not just price) to get names for games SteamSpy missed
+            const priceRes = await fetch(
+              `https://store.steampowered.com/api/appdetails?appids=${results.map((r: any) => r.appid).join(",")}&filters=price_overview,basic&cc=${cc || "US"}`
+            );
+            if (priceRes.ok) {
+              const text = await priceRes.text();
+              if (!text.startsWith("<")) {
+                const data = JSON.parse(text);
+                results = results.map((r: any) => {
+                  const entry = data?.[String(r.appid)];
+                  if (!entry?.success) return r;
+                  const d = entry.data || {};
+                  // Filter out non-games (software, tools, videos, etc.)
+                  if (d.type && d.type !== "game" && d.type !== "dlc") return null;
+                  const pov = d.price_overview;
+                  return {
+                    ...r,
+                    name: (r.name?.startsWith("App ") ? d.name : r.name) || r.name,
+                    header: d.header_image || r.header,
+                    price_cents: pov?.final ?? r.price_cents,
+                    discount_pct: pov?.discount_percent ?? r.discount_pct,
+                    currencyCode: pov?.currency ?? r.currencyCode,
+                  };
+                }).filter(Boolean) as typeof results;
+                const curr = results.find((r: any) => r.currencyCode)?.currencyCode;
+                if (curr) setCatalogCurrency(curr);
+              }
+            }
+          } catch {}
+        }
 
         if (!alive) return;
         setRecs(results);
 
-        // Build tag sidebar from matched tags (already in results, no enrich needed)
+        // Build sidebar from "Similar to X" reasons
         const tags: Record<number, string[]> = {};
-        for (const r of results) {
-          tags[r.appid] = r.matchReasons || [];
-        }
+        for (const r of results) tags[r.appid] = r.matchReasons || [];
         setRecTags(tags);
       } catch (e: any) { if (!alive) return; setRecErr(e?.message || "Failed to build recommendations."); }
       finally { if (alive) setLoadingRecs(false); }
