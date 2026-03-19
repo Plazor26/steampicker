@@ -25,7 +25,7 @@ export async function GET(
     req.headers.get("x-forwarded-country") ||
     req.headers.get("cf-ipcountry") ||
     undefined;
-  const cc = (qCC || ipCC || "IN").toUpperCase();
+  const cc = (qCC || ipCC || "US").toUpperCase();
 
   // Pull owned games (profile API already maps and caches)
   const baseUrl = `${req.nextUrl.origin}`;
@@ -81,7 +81,7 @@ export async function GET(
   // Sum in native currency (assumes store gives consistent currency for region)
   const filtered = results.filter(Boolean) as { cents: number | null; currencyCode: string | null }[];
   const currencyCode =
-    filtered.find((r) => r.currencyCode)?.currencyCode || (cc === "IN" ? "INR" : "USD");
+    filtered.find((r) => r.currencyCode)?.currencyCode || "USD";
   const totalCents = filtered.reduce((sum, r) => sum + (r.cents || 0), 0);
   const value = totalCents / 100;
 

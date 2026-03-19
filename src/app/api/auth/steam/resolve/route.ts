@@ -25,13 +25,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid input" }, { status: 400 });
   }
 
-  const res = await fetch(
-    `https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/?key=${process.env.STEAM_API_KEY}&vanityurl=${vanity}`
-  );
-  const data = await res.json();
+  const key = process.env.STEAM_API_KEY;
+  if (!key) {
+    return NextResponse.json({ error: "STEAM_API_KEY is not configured" }, { status: 500 });
+  }
 
-  if (data.response.success !== 1) {
-    return NextResponse.json({ error: "Could not resolve vanity URL" }, { status: 404 });
+  const res = await fetch(
+    `https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/?key=${key}&vanityurl=${encodeURIComponent(vanity)}`
+  );
+
+  if (!res.ok) {
+    return NextResponse.json({ error: `Steam API error (${res.status})` }, { status: 502 });
+  }
+
+  let data: any;
+  try {
+    data = await res.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid response from Steam API" }, { status: 502 });
+  }
+
+  if (data.response?.success !== 1) {
+    return NextResponse.json({ error: "Could not find that Steam profile" }, { status: 404 });
   }
 
   return NextResponse.json({ steamId: data.response.steamid });

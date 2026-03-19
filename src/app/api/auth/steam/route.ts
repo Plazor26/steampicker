@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
-  const base = process.env.BASE_URL || "https://steampicker.plazor.xyz";
+  const base = process.env.BASE_URL || req.nextUrl.origin;
 
   // Construct OpenID request
   const params = new URLSearchParams({

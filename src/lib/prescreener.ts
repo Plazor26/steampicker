@@ -1,22 +1,21 @@
 "use client";
 
 /**
- * Math-based prescreener. Transparent, fast, no ML:
- *  - recent playtime and lifetime playtime
- *  - match to user's top genres/categories
- *  - discounts
- *  - mild preference for newer releases (or penalize very old)
- *  - optional price bias
+ * Content-based recommendation engine.
  *
- * We return a ranked list; later you can pass top K to the ANN.
+ * Pipeline:
+ * 1. Build a "User DNA" tag vector from owned games, weighted by log(playtime).
+ * 2. Score each unowned candidate by cosine similarity to the User DNA.
+ * 3. Boost by review quality, discount, and recency.
+ * 4. Return top N candidates.
  */
 
 export type GameLite = {
   appid: number;
   name: string;
   header: string;
-  hours: number;    // lifetime
-  hours2w?: number; // last 2 weeks
+  hours: number;
+  hours2w?: number;
 };
 
 export type Enriched = {
@@ -25,23 +24,24 @@ export type Enriched = {
   price_cents: number | null;
   discount_pct: number;
   released_year: number | null;
+  review_count?: number | null;
+  metacritic_score?: number | null;
 };
 
-export type PrescreenInput = {
-  allGames: GameLite[];
-  // Derived “taste profile” from the user:
-  favoriteGenres: string[];     // user top genres (by hours)
-  favoriteCategories: string[]; // user top categories (by hours)
-  // Global info:
-  nowYear?: number;             // defaults to current year
+export type CandidateGame = {
+  appid: number;
+  name: string;
+  header: string;
+  price_cents?: number | null;
+  discount_pct?: number;
 };
 
-export type PrescreenResult = (GameLite & {
+export type PrescreenResult = (CandidateGame & {
   score: number;
   enriched?: Enriched;
+  matchReasons?: string[];
 })[];
 
-/** Pull store enrich for a list of appids (batches internally) */
 export async function fetchEnrich(appids: number[]): Promise<Record<number, Enriched>> {
   if (!appids.length) return {};
   const res = await fetch("/api/steam/enrich", {
@@ -54,131 +54,152 @@ export async function fetchEnrich(appids: number[]): Promise<Record<number, Enri
   return j?.items || {};
 }
 
-/** Build simple taste profile from user's own library if you don't have one */
-export function inferTasteFromLibrary(all: GameLite[], enrichMap: Record<number, Enriched>) {
-  // Count hours per tag
-  const gCount: Record<string, number> = {};
-  const cCount: Record<string, number> = {};
-  for (const g of all) {
+/**
+ * Build a weighted tag vector from the user's library.
+ * Weighted by log(1 + hours) so mega-played games don't dominate.
+ * Recent games get a 2.5x boost as a strong active-interest signal.
+ * The resulting vector is L2-normalized so cosine similarity = dot product.
+ */
+function buildUserDNA(
+  ownedGames: GameLite[],
+  enrichMap: Record<number, Enriched>
+): Record<string, number> {
+  const vec: Record<string, number> = {};
+
+  for (const g of ownedGames) {
     const e = enrichMap[g.appid];
     if (!e) continue;
-    const h = g.hours;
-    for (const z of e.genres || []) gCount[z] = (gCount[z] || 0) + h;
-    for (const z of e.categories || []) cCount[z] = (cCount[z] || 0) + h;
+    const w = Math.log1p(g.hours) + (g.hours2w ? Math.log1p(g.hours2w) * 2.5 : 0);
+    if (w <= 0) continue;
+    for (const genre of e.genres) vec[`g:${genre}`] = (vec[`g:${genre}`] || 0) + w;
+    for (const cat of e.categories) vec[`c:${cat}`] = (vec[`c:${cat}`] || 0) + w;
   }
-  const top = (m: Record<string, number>, n = 6) =>
-    Object.entries(m)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, n)
-      .map(([k]) => k);
 
-  return {
-    favoriteGenres: top(gCount, 8),
-    favoriteCategories: top(cCount, 6),
-  };
+  // L2-normalize
+  const mag = Math.sqrt(Object.values(vec).reduce((s, v) => s + v * v, 0));
+  if (mag > 0) for (const k of Object.keys(vec)) vec[k] /= mag;
+
+  return vec;
 }
 
-/** Core scoring function (transparent weights; tweak freely) */
-function scoreOne(
-  g: GameLite,
+/**
+ * Score one candidate game against the user DNA using cosine similarity.
+ * Returns a score in [0, 1] and the top matched genre labels.
+ */
+function scoreCandidate(
+  candidate: CandidateGame,
   e: Enriched | undefined,
-  taste: { favoriteGenres: string[]; favoriteCategories: string[] },
+  dna: Record<string, number>,
   nowYear: number
-) {
-  const hours = g.hours || 0;
-  const h2 = g.hours2w || 0;
-
-  // Normalize hours (soft cap)
-  const hoursNorm = Math.min(1, hours / 200);  // 200h cap
-  const h2Norm = Math.min(1, h2 / 20);         // 20h in 2 weeks cap
-
-  // Tag match
-  let genreMatch = 0;
-  let catMatch = 0;
-  if (e) {
-    const gs = new Set(e.genres || []);
-    const cs = new Set(e.categories || []);
-    for (const z of taste.favoriteGenres) if (gs.has(z)) genreMatch += 1;
-    for (const z of taste.favoriteCategories) if (cs.has(z)) catMatch += 1;
+): { score: number; matchReasons: string[] } {
+  // 1. Content similarity (primary signal)
+  let similarity = 0;
+  const matched: string[] = [];
+  if (e && Object.keys(dna).length > 0) {
+    let dot = 0;
+    let candidateMagSq = 0;
+    for (const genre of e.genres) {
+      const w = dna[`g:${genre}`] || 0;
+      dot += w;
+      candidateMagSq += 1;
+      if (w > 0.01) matched.push(genre);
+    }
+    for (const cat of e.categories) {
+      dot += dna[`c:${cat}`] || 0;
+      candidateMagSq += 1;
+    }
+    const candidateMag = Math.sqrt(candidateMagSq);
+    similarity = candidateMag > 0 ? Math.min(1, dot / candidateMag) : 0;
   }
-  // Scale matches into [0..1]-ish
-  const genreScore = Math.min(1, genreMatch / Math.max(1, taste.favoriteGenres.length));
-  const catScore = Math.min(1, catMatch / Math.max(1, taste.favoriteCategories.length));
 
-  // Discount
-  const disc = Math.max(0, Math.min(100, e?.discount_pct ?? 0)) / 100;
+  // 2. Review quality
+  let qualityScore = 0.4;
+  if (e?.metacritic_score != null && e.metacritic_score > 0) {
+    qualityScore = e.metacritic_score / 100;
+  } else if (e?.review_count != null && e.review_count > 0) {
+    qualityScore = Math.min(0.85, 0.4 + 0.45 * (Math.log10(e.review_count) / 5));
+  }
 
-  // Newer bias (mild): 0..1 where 1 ~ recent, 0 ~ very old
-  let newness = 0.5;
+  // 3. Discount
+  const discountScore = Math.min(1, (e?.discount_pct ?? candidate.discount_pct ?? 0) / 100);
+
+  // 4. Recency
+  let recencyScore = 0.5;
   if (e?.released_year) {
-    const age = Math.max(0, nowYear - e.released_year);
-    newness = 1 - Math.min(1, age / 12); // 0 after ~12y
+    recencyScore = 1 - Math.min(1, Math.max(0, nowYear - e.released_year) / 10);
   }
 
-  // Light penalty for high price (optional, keep tiny)
+  // 5. Light price penalty
   let pricePenalty = 0;
-  if (e?.price_cents != null) {
-    const dollars = e.price_cents / 100;
-    pricePenalty = Math.min(0.2, Math.max(0, (dollars - 40) / 200)); // +$40 adds at most 0.2 penalty
+  const priceCents = e?.price_cents ?? candidate.price_cents;
+  if (priceCents != null) {
+    pricePenalty = Math.min(0.15, Math.max(0, (priceCents / 100 - 30) / 200));
   }
 
-  // Combine with weights (transparent)
   const score =
-    0.30 * h2Norm +
-    0.25 * hoursNorm +
-    0.20 * genreScore +
-    0.10 * catScore +
-    0.12 * disc +
-    0.08 * newness -
+    0.55 * similarity +
+    0.20 * qualityScore +
+    0.15 * discountScore +
+    0.10 * recencyScore -
     pricePenalty;
 
-  return Math.max(0, score);
+  return { score: Math.max(0, Math.min(1, score)), matchReasons: matched.slice(0, 3) };
 }
 
-/** Main prescreener */
-export async function prescreen(input: PrescreenInput, topN = 60): Promise<PrescreenResult> {
-  const { allGames, nowYear = new Date().getFullYear() } = input;
-  if (!allGames?.length) return [];
+/**
+ * Main prescreener.
+ * @param ownedGames - user's library (used ONLY to build taste profile, never returned as recs)
+ * @param candidates - unowned store games to score and rank
+ * @param topN - max results to return
+ */
+export async function prescreen(
+  ownedGames: GameLite[],
+  candidates: CandidateGame[],
+  topN = 30
+): Promise<PrescreenResult> {
+  if (!ownedGames?.length || !candidates?.length) return [];
 
-  // Pull enrich in batches (we can enrich everything once; browser memory is fine)
-  const enrichMap = await fetchEnrich(allGames.map((g) => g.appid));
+  const nowYear = new Date().getFullYear();
 
-  // If no taste provided, infer from library itself
-  const taste =
-    input.favoriteGenres?.length || input.favoriteCategories?.length
-      ? { favoriteGenres: input.favoriteGenres, favoriteCategories: input.favoriteCategories }
-      : inferTasteFromLibrary(allGames, enrichMap);
+  // For taste profiling: use top 50 most-played + all recently-played (max 80 total)
+  const sortedOwned = [...ownedGames].sort((a, b) => b.hours - a.hours);
+  const recentlyPlayed = ownedGames.filter((g) => (g.hours2w ?? 0) > 0);
+  const tastePool = [
+    ...new Map(
+      [...sortedOwned.slice(0, 50), ...recentlyPlayed].map((g) => [g.appid, g])
+    ).values(),
+  ].slice(0, 80);
 
-  // Filter quickly:
-  const filtered = allGames.filter((g) => {
-    const e = enrichMap[g.appid];
-    // Basic sanity: must have a name and a header
-    if (!g.name || !g.header) return false;
-    // Deprioritize ancient titles unless recently played or on sale:
-    const old =
-      e?.released_year ? nowYear - e.released_year > 12 : false;
-    const hasRecent = (g.hours2w || 0) > 0;
-    const bigSale = (e?.discount_pct || 0) >= 40;
+  // Enrich taste pool and candidates in parallel
+  const [ownedEnrich, candidateEnrich] = await Promise.all([
+    fetchEnrich(tastePool.map((g) => g.appid)),
+    fetchEnrich(candidates.map((c) => c.appid)),
+  ]);
 
-    if (old && !hasRecent && !bigSale) return false;
+  // Build user DNA
+  const dna = buildUserDNA(tastePool, ownedEnrich);
 
-    // Skip “non-games” categories if you want (e.g., Software, Demos)
+  // Filter out demos/software/very old games
+  const filtered = candidates.filter((c) => {
+    if (!c.name || !c.header) return false;
+    const e = candidateEnrich[c.appid];
     const cats = new Set(e?.categories || []);
-    if (cats.has("Demo") || cats.has("SteamVR Tool") || cats.has("Application")) return false;
-
+    if (cats.has("Demo") || cats.has("Application") || cats.has("SteamVR Tool")) return false;
+    if (e?.released_year) {
+      const age = nowYear - e.released_year;
+      const bigSale = (e.discount_pct || 0) >= 50;
+      if (age > 12 && !bigSale) return false;
+    }
     return true;
   });
 
-  // Score
-  const scored = filtered.map((g) => {
-    const e = enrichMap[g.appid];
-    const score = scoreOne(g, e, taste, nowYear);
-    return { ...g, score, enriched: e };
+  // Score and sort
+  const scored = filtered.map((c) => {
+    const e = candidateEnrich[c.appid];
+    const { score, matchReasons } = scoreCandidate(c, e, dna, nowYear);
+    return { ...c, score, enriched: e, matchReasons };
   });
 
-  // Sort descending by score
   scored.sort((a, b) => b.score - a.score);
-
-  // Return top N
   return scored.slice(0, topN);
 }

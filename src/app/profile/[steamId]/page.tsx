@@ -4,30 +4,33 @@
 import React, { useEffect, useMemo, useState, use } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import Particles, { initParticlesEngine } from "@tsparticles/react";
-import { loadFull } from "tsparticles";
-import { prescreen } from "@/lib/prescreener";
-import { Analytics } from "@vercel/analytics/next"
-/* ---------- Types returned by /api/steam/profile/[steamId] ---------- */
+import { motion, AnimatePresence } from "framer-motion";
+import { prescreen, type CandidateGame } from "@/lib/prescreener";
+import { FaSteam, FaArrowLeft, FaExternalLinkAlt } from "react-icons/fa";
+import BackgroundEffects from "@/components/BackgroundEffects";
+import { Analytics } from "@vercel/analytics/next";
+
+/* ─── Types ─── */
 type Profile = {
   personaName: string | null;
   avatar: string | null;
   profileUrl: string | null;
-  visibility: number | null; // 3 public, 1 private
+  country: string | null;
+  visibility: number | null;
 };
 type GameLite = {
   appid: number;
   name: string;
   header: string;
-  hours: number; // lifetime hours
-  hours2w?: number; // last 2 weeks hours
+  hours: number;
+  hours2w?: number;
 };
 type Library = {
   totalGames: number | null;
-  totalMinutes: number | null; // lifetime minutes
+  totalMinutes: number | null;
   neverPlayed: number | null;
   recentGames: GameLite[];
-  topGames: GameLite[]; // kept in type, but we won't render this section anymore
+  topGames: GameLite[];
   ownedGames: { appid: number }[];
   allGames?: GameLite[];
 };
@@ -37,53 +40,33 @@ type ApiResponse = ApiOk | ApiErr;
 
 export const dynamic = "force-dynamic";
 
-/* ---------- Helpers ---------- */
+/* ─── Helpers ─── */
 function guessCCFromNavigator(): string | null {
   if (typeof navigator === "undefined") return null;
   const loc = Intl.DateTimeFormat().resolvedOptions().locale || (navigator as any).language || "";
   const part = String(loc).split("-")[1];
   return part && part.length === 2 ? part.toUpperCase() : null;
 }
-
 function headerURL(appid: number) {
   return `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appid}/header.jpg`;
 }
+function fmt(n: number | null | undefined) { return n == null ? "—" : n.toLocaleString(); }
+function fmtHours(minutes: number | null | undefined) { return minutes == null ? "—" : `${(minutes / 60).toFixed(1)} h`; }
 
-/** Normalize a wide variety of catalog payloads into a flat array */
 function normalizeCatalog(cat: any): Array<{
-  appid: number;
-  name: string;
-  header?: string;
-  price_cents?: number;
-  discount_pct?: number;
-  currencyCode?: string;
+  appid: number; name: string; header?: string;
+  price_cents?: number; discount_pct?: number; currencyCode?: string;
 }> {
   if (!cat) return [];
-  // If it's already an array
-  if (Array.isArray(cat)) {
-    return normalizeCatalog({ items: cat });
-  }
-
-  // Try common keys
-  let arr =
-    cat.candidates ??
-    cat.items ??
-    cat.games ??
-    cat.data ??
-    cat.list ??
-    cat.response?.items ??
-    cat.response?.candidates ??
-    null;
-
-  // featuredcategories-like shapes
-  if (!Array.isArray(arr) || arr.length === 0) {
+  if (Array.isArray(cat)) return normalizeCatalog({ items: cat });
+  let arr = cat.candidates ?? cat.items ?? cat.games ?? cat.data ?? cat.list ??
+    cat.response?.items ?? cat.response?.candidates ?? null;
+  if (!Array.isArray(arr) || !arr.length) {
     if (Array.isArray(cat?.featured?.items)) arr = cat.featured.items;
     else if (Array.isArray(cat?.specials?.items)) arr = cat.specials.items;
     else if (Array.isArray(cat?.topsellers?.items)) arr = cat.topsellers.items;
   }
-
-  // Some payloads put arrays under unknown keys – flatten any array values
-  if (!Array.isArray(arr) || arr.length === 0) {
+  if (!Array.isArray(arr) || !arr.length) {
     const flat: any[] = [];
     for (const k of Object.keys(cat)) {
       const v = (cat as any)[k];
@@ -97,37 +80,22 @@ function normalizeCatalog(cat: any): Array<{
     }
     arr = flat;
   }
-
   if (!Array.isArray(arr)) return [];
-
-  return arr
-    .map((c: any) => {
-      const appid =
-        c.appid ?? c.id ?? c.app_id ?? c.appID ?? c.appId ?? null;
-      if (!Number.isFinite(appid)) return null;
-      const price_cents =
-        typeof c.price_cents === "number"
-          ? c.price_cents
-          : typeof c.final_price === "number"
-          ? c.final_price
-          : typeof c.price === "number"
-          ? c.price
-          : undefined;
-      const header =
-        c.header ?? c.header_image ?? c.capsule_image ?? c.large_capsule_image ?? headerURL(appid);
-      return {
-        appid,
-        name: c.name ?? c.title ?? `App ${appid}`,
-        header,
-        price_cents,
-        discount_pct: c.discount_pct ?? c.discount_percent ?? c.discount ?? 0,
-        currencyCode: c.currencyCode ?? c.currency ?? undefined,
-      };
-    })
-    .filter(Boolean) as any[];
+  return arr.map((c: any) => {
+    const appid = c.appid ?? c.id ?? c.app_id ?? c.appID ?? c.appId ?? null;
+    if (!Number.isFinite(appid)) return null;
+    const price_cents = typeof c.price_cents === "number" ? c.price_cents
+      : typeof c.final_price === "number" ? c.final_price
+      : typeof c.price === "number" ? c.price : undefined;
+    return {
+      appid, name: c.name ?? c.title ?? `App ${appid}`,
+      header: c.header ?? c.header_image ?? c.capsule_image ?? headerURL(appid),
+      price_cents, discount_pct: c.discount_pct ?? c.discount_percent ?? c.discount ?? 0,
+      currencyCode: c.currencyCode ?? c.currency ?? undefined,
+    };
+  }).filter(Boolean) as any[];
 }
 
-/** Try several catalog URLs until we get items */
 async function fetchCatalog(cc: string | null) {
   const tries = [
     `/api/steam/catalog?${new URLSearchParams({ ...(cc ? { cc } : {}), limit: "300" }).toString()}`,
@@ -140,27 +108,154 @@ async function fetchCatalog(cc: string | null) {
       const j = await r.json().catch(() => null);
       const items = normalizeCatalog(j);
       if (Array.isArray(items) && items.length) return items;
-    } catch {
-      /* try next */
-    }
+    } catch {}
   }
   return [] as ReturnType<typeof normalizeCatalog>;
 }
 
-export default function Page({
-  params,
-}: {
-  // Next 15: params is a Promise in client components, unwrap via React.use()
-  params: Promise<{ steamId: string }>;
-}) {
+/* ─── Animation variants ─── */
+const fadeUp = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: "easeOut" as const } } };
+const stagger = { show: { transition: { staggerChildren: 0.08 } } };
+
+/* ─── Sub-components ─── */
+function StatPill({ label, value, sub, color }: { label: string; value: string; sub?: string; color: string }) {
+  return (
+    <motion.div variants={fadeUp}
+      className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-6 backdrop-blur-sm text-center relative overflow-hidden group"
+    >
+      <div className={`absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-br ${color} rounded-2xl`} />
+      <div className="relative z-10">
+        <div className="text-xs uppercase tracking-widest text-gray-500 mb-2">{label}</div>
+        <div className="text-2xl font-extrabold text-white">{value}</div>
+        {sub && <div className="text-xs text-gray-500 mt-1">{sub}</div>}
+      </div>
+    </motion.div>
+  );
+}
+
+function GameCard({ game, show2w = false, badge }: { game: GameLite; show2w?: boolean; badge?: React.ReactNode }) {
+  return (
+    <motion.a
+      variants={fadeUp}
+      href={`https://store.steampowered.com/app/${game.appid}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group block rounded-2xl overflow-hidden border border-white/[0.08] bg-white/[0.03] backdrop-blur-sm hover:border-white/20 hover:bg-white/[0.06] transition-all duration-200"
+      whileHover={{ y: -3 }}
+    >
+      <div className="relative w-full aspect-[460/215] bg-black/40">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={game.header}
+          alt={game.name}
+          className="w-full h-full object-cover opacity-85 group-hover:opacity-100 transition-opacity duration-200"
+          loading="lazy"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+        {badge && <div className="absolute top-2 left-2 flex gap-1.5">{badge}</div>}
+      </div>
+      <div className="p-4">
+        <div className="font-semibold text-sm text-white truncate mb-1">{game.name}</div>
+        <div className="text-xs text-gray-500">
+          {show2w && (game.hours2w ?? 0) > 0
+            ? `${game.hours2w} h lately · ${game.hours} h total`
+            : `${game.hours} h total`}
+        </div>
+      </div>
+    </motion.a>
+  );
+}
+
+function RecCard({ game }: { game: any }) {
+  return (
+    <motion.a
+      variants={fadeUp}
+      href={`https://store.steampowered.com/app/${game.appid}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group block rounded-2xl overflow-hidden border border-white/[0.08] bg-white/[0.03] backdrop-blur-sm hover:border-blue-500/30 hover:bg-white/[0.06] transition-all duration-200"
+      whileHover={{ y: -3 }}
+    >
+      <div className="relative w-full aspect-[460/215] bg-black/40">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={game.header}
+          alt={game.name}
+          className="w-full h-full object-cover opacity-85 group-hover:opacity-100 transition-opacity duration-200"
+          loading="lazy"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent" />
+        <div className="absolute top-2 left-2 flex gap-1.5">
+          {typeof game.score === "number" && (
+            <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-blue-600/90 text-white backdrop-blur-sm">
+              {Math.round(game.score * 100)}% match
+            </span>
+          )}
+          {game.discount_pct > 0 && (
+            <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-emerald-600/90 text-white backdrop-blur-sm">
+              -{game.discount_pct}%
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="p-4">
+        <div className="font-semibold text-sm text-white truncate mb-1">{game.name}</div>
+        <div className="text-xs text-gray-500 flex items-center justify-between">
+          <span>
+            {typeof game.price_cents === "number"
+              ? `$${(game.price_cents / 100).toFixed(2)}`
+              : "View on store"}
+          </span>
+          <FaExternalLinkAlt size={10} className="text-gray-600 group-hover:text-blue-400 transition-colors" />
+        </div>
+        {game.matchReasons?.length > 0 && (
+          <div className="text-xs text-blue-400/60 mt-1.5 truncate">{game.matchReasons.join(" · ")}</div>
+        )}
+      </div>
+    </motion.a>
+  );
+}
+
+function Badge({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-black/70 border border-white/10 text-gray-300 backdrop-blur-sm">
+      {children}
+    </span>
+  );
+}
+
+function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all duration-150 ${
+        checked
+          ? "bg-blue-600/20 border-blue-500/50 text-blue-300"
+          : "bg-white/[0.04] border-white/[0.08] text-gray-400 hover:border-white/20"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function SectionHeader({ label, title }: { label: string; title: string }) {
+  return (
+    <div className="mb-8">
+      <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/[0.08] bg-white/[0.04] text-gray-400 text-xs font-semibold tracking-widest uppercase mb-3">
+        {label}
+      </div>
+      <h2 className="text-2xl font-bold text-white">{title}</h2>
+    </div>
+  );
+}
+
+/* ─── Page ─── */
+export default function Page({ params }: { params: Promise<{ steamId: string }> }) {
   const { steamId } = use(params);
 
-  /* ---------- state ---------- */
-  const [ready, setReady] = useState(false);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
-
-  // Filters (All Games browser)
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<"hours" | "name" | "recent">("hours");
   const [ownedOnly, setOwnedOnly] = useState(true);
@@ -168,21 +263,12 @@ export default function Page({
   const [tagUnder2h, setTagUnder2h] = useState(false);
   const [tagRecent, setTagRecent] = useState(false);
   const [minHours, setMinHours] = useState(0);
-
-  // Account value (formatted display string goes in currency)
   const [acctValue, setAcctValue] = useState<{ value: number; currency: string } | null>(null);
-
-  // Recommendations
   const [recs, setRecs] = useState<any[]>([]);
   const [loadingRecs, setLoadingRecs] = useState(false);
   const [recErr, setRecErr] = useState<string | null>(null);
 
-  /* ---------- Particles ---------- */
-  useEffect(() => {
-    initParticlesEngine(loadFull).then(() => setReady(true));
-  }, []);
-
-  /* ---------- Fetch profile ---------- */
+  /* Fetch profile */
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -192,25 +278,18 @@ export default function Page({
         if (!alive) return;
         if (!res.ok || !("ok" in j) || !j.ok) setErr((j as any)?.error || `Failed (${res.status})`);
         setData(j);
-      } catch (e: any) {
-        if (!alive) return;
-        setErr(e?.message || "Unable to load this profile.");
-      }
+      } catch (e: any) { if (!alive) return; setErr(e?.message || "Unable to load this profile."); }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, [steamId]);
 
-  /* ---------- Load estimated account value (region aware) ---------- */
+  /* Fetch account value */
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const cc = guessCCFromNavigator();
-        const r = await fetch(`/api/steam/value/${steamId}${cc ? `?cc=${cc}` : ""}`, {
-          cache: "no-store",
-        });
+        const cc = profile?.country || guessCCFromNavigator();
+        const r = await fetch(`/api/steam/value/${steamId}${cc ? `?cc=${cc}` : ""}`, { cache: "no-store" });
         if (!alive || !r.ok) return;
         const j = await r.json().catch(() => null);
         if (j?.ok && typeof j.value === "number") {
@@ -219,508 +298,305 @@ export default function Page({
             : `${j.currency ?? ""} ${j.value.toLocaleString()}`;
           setAcctValue({ value: j.value, currency: formatted });
         }
-      } catch {
-        /* optional */
-      }
+      } catch {}
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, [steamId]);
 
-  const particlesOptions = useMemo(
-    () => ({
-      fullScreen: { enable: false },
-      background: { color: "transparent" },
-      fpsLimit: 60,
-      detectRetina: true,
-      particles: {
-        number: { value: 140, density: { enable: true, area: 800 } },
-        color: { value: ["#60a5fa", "#a78bfa", "#22d3ee"] },
-        links: { enable: true, color: "#7dd3fc", distance: 140, opacity: 0.45, width: 1 },
-        move: { enable: true, speed: 1.1, outModes: { default: "out" } },
-        opacity: { value: 0.75 },
-        size: { value: { min: 2, max: 4 } },
-      },
-      interactivity: {
-        events: { onHover: { enable: true, mode: "repulse" }, resize: true },
-        modes: { repulse: { distance: 120, duration: 0.4 } },
-      },
-    }),
-    []
-  );
-
-  /* ---------- Derived values ---------- */
+  /* Derived */
   const isOk = !!data && "ok" in data && data.ok;
   const profile: Profile | null = isOk ? (data as ApiOk).profile : null;
   const lib: Library | null = isOk ? (data as ApiOk).library : null;
   const ownedSet = useMemo(() => new Set((lib?.ownedGames || []).map((g) => g.appid)), [lib]);
 
   const allGames: GameLite[] = useMemo(() => {
-    const base =
-      lib?.allGames && lib.allGames.length > 0
-        ? lib.allGames
-        : [...(lib?.recentGames || []), ...(lib?.topGames || [])];
+    const base = lib?.allGames?.length ? lib.allGames : [...(lib?.recentGames || []), ...(lib?.topGames || [])];
     const seen = new Set<number>();
-    const dedup: GameLite[] = [];
-    for (const g of base) {
-      if (!seen.has(g.appid)) {
-        seen.add(g.appid);
-        dedup.push(g);
-      }
-    }
-    return dedup;
+    return base.filter((g) => { if (seen.has(g.appid)) return false; seen.add(g.appid); return true; });
   }, [lib]);
 
   const filtered = useMemo(() => {
     let list = allGames;
     if (ownedOnly) list = list.filter((g) => ownedSet.has(g.appid));
-    if (query.trim()) {
-      const q = query.trim().toLowerCase();
-      list = list.filter((g) => g.name.toLowerCase().includes(q));
-    }
+    if (query.trim()) { const q = query.trim().toLowerCase(); list = list.filter((g) => g.name.toLowerCase().includes(q)); }
     if (minHours > 0) list = list.filter((g) => g.hours >= minHours);
     if (tagNeverPlayed) list = list.filter((g) => g.hours <= 0);
     if (tagUnder2h) list = list.filter((g) => g.hours > 0 && g.hours < 2);
     if (tagRecent) list = list.filter((g) => (g.hours2w ?? 0) > 0);
-
     switch (sortBy) {
-      case "name":
-        list = [...list].sort((a, b) => a.name.localeCompare(b.name));
-        break;
-      case "recent":
-        list = [...list].sort((a, b) => (b.hours2w ?? 0) - (a.hours2w ?? 0));
-        break;
-      case "hours":
-      default:
-        list = [...list].sort((a, b) => b.hours - a.hours);
-        break;
+      case "name": list = [...list].sort((a, b) => a.name.localeCompare(b.name)); break;
+      case "recent": list = [...list].sort((a, b) => (b.hours2w ?? 0) - (a.hours2w ?? 0)); break;
+      default: list = [...list].sort((a, b) => b.hours - a.hours);
     }
     return list;
   }, [allGames, ownedOnly, query, minHours, tagNeverPlayed, tagUnder2h, tagRecent, sortBy, ownedSet]);
 
-  /* ---------- Recommendations (catalog -> exclude owned -> prescreen/fallback) ---------- */
+  /* Recommendations */
   useEffect(() => {
     let alive = true;
     (async () => {
-      if (!lib?.allGames?.length) {
-        setRecs([]);
-        return;
-      }
-      setLoadingRecs(true);
-      setRecErr(null);
+      if (!lib?.allGames?.length) { setRecs([]); return; }
+      setLoadingRecs(true); setRecErr(null);
       try {
-        const cc = guessCCFromNavigator();
-        let candidates = await fetchCatalog(cc);
-
-        // Ensure header exists & remove owned
-        candidates = candidates
-          .map((c) => ({ ...c, header: c.header || headerURL(c.appid) }))
-          .filter((c) => !ownedSet.has(c.appid));
-
-        let shortlist: any[] = [];
-
-        // Try prescreener first (if it supports candidates)
-        try {
-          const maybe = await (prescreen as any)(
-            { allGames: lib.allGames as GameLite[], favoriteGenres: [], favoriteCategories: [] },
-            60,
-            candidates
-          );
-          if (Array.isArray(maybe) && maybe.length) {
-            shortlist = maybe;
-          }
-        } catch {
-          /* ignore */
-        }
-
-        // Fallback: biggest discount → cheapest → name
-        if (!shortlist.length && candidates.length) {
-          shortlist = [...candidates]
-            .sort((a, b) => {
-              const d = (b.discount_pct || 0) - (a.discount_pct || 0);
-              if (d) return d;
-              const ap = a.price_cents ?? Number.MAX_SAFE_INTEGER;
-              const bp = b.price_cents ?? Number.MAX_SAFE_INTEGER;
-              if (ap !== bp) return ap - bp;
-              return String(a.name).localeCompare(String(b.name));
-            })
-            .slice(0, 60)
-            .map((c, i) => ({ ...c, score: (c.discount_pct || 0) / 100 || 0.01 * (60 - i) }));
-        }
-
-        // Final cap
-        shortlist = shortlist.slice(0, 30);
-
+        const cc = profile?.country || guessCCFromNavigator();
+        const catalogItems = await fetchCatalog(cc);
+        const ownedAppIds = new Set((lib.ownedGames || []).map((g) => g.appid));
+        const candidates: CandidateGame[] = catalogItems
+          .filter((c) => !ownedAppIds.has(c.appid))
+          .map((c) => ({ appid: c.appid, name: c.name, header: c.header || headerURL(c.appid), price_cents: c.price_cents ?? null, discount_pct: c.discount_pct ?? 0 }));
+        const results = await prescreen(lib.allGames as GameLite[], candidates, 30);
         if (!alive) return;
-        setRecs(shortlist);
-      } catch (e: any) {
-        if (!alive) return;
-        setRecErr(e?.message || "Failed to build recommendations.");
-      } finally {
-        if (alive) setLoadingRecs(false);
-      }
+        setRecs(results);
+      } catch (e: any) { if (!alive) return; setRecErr(e?.message || "Failed to build recommendations."); }
+      finally { if (alive) setLoadingRecs(false); }
     })();
-    return () => {
-      alive = false;
-    };
-  }, [lib, ownedSet]);
+    return () => { alive = false; };
+  }, [lib, profile]);
 
-  /* ---------- UI ---------- */
   const loading = !data && !err;
   const errorMsg = !isOk ? err || (data as ApiErr | null)?.error || null : null;
 
   return (
-    <main className="relative min-h-screen text-gray-100 overflow-hidden">
-      <Background ready={ready} particlesOptions={particlesOptions} />
+    <main className="relative min-h-screen text-gray-100 overflow-x-hidden">
+      <Analytics />
+
+      <BackgroundEffects />
+      <div className="relative z-10">
+
+      {/* Nav bar */}
+      <nav className="sticky top-0 z-50 border-b border-white/[0.06] bg-[#050a14]/80 backdrop-blur-xl px-6 py-4">
+        <div className="max-w-6xl mx-auto flex items-center justify-between">
+          <Link href="/" className="flex items-center gap-2 text-sm font-semibold text-gray-400 hover:text-white transition-colors">
+            <FaArrowLeft size={12} />
+            <FaSteam className="text-blue-400" />
+            <span>SteamPicker</span>
+          </Link>
+          {profile?.personaName && (
+            <span className="text-xs text-gray-500 font-mono">{steamId}</span>
+          )}
+        </div>
+      </nav>
 
       {/* Loading */}
-      {loading && (
-        <div className="flex items-center justify-center min-h-screen">
-          <div className="text-center bg-white/5 border border-white/10 px-6 py-8 rounded-xl backdrop-blur">
-            <div className="text-2xl font-semibold mb-2">Loading profile…</div>
-            <div className="text-gray-400">Fetching Steam data</div>
-          </div>
-        </div>
-      )}
+      <AnimatePresence>
+        {loading && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="flex items-center justify-center min-h-[80vh]"
+          >
+            <div className="text-center">
+              <div className="w-12 h-12 rounded-full border-2 border-blue-500/30 border-t-blue-400 animate-spin mx-auto mb-4" />
+              <p className="text-gray-400 text-sm">Loading Steam profile…</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Error */}
       {!loading && errorMsg && (
-        <div className="flex items-center justify-center min-h-screen p-6">
-          <div className="max-w-xl text-center bg-white/5 border border-white/10 p-8 rounded-xl backdrop-blur">
-            <h1 className="text-3xl font-bold mb-4">Profile</h1>
-            <p className="text-gray-300 mb-6">{errorMsg}</p>
-            <Link href="/" className="px-5 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 font-semibold inline-block">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+          className="flex items-center justify-center min-h-[80vh] p-6"
+        >
+          <div className="max-w-md text-center rounded-2xl bg-white/[0.04] border border-white/[0.08] p-10 backdrop-blur-sm">
+            <div className="text-4xl mb-4">😶‍🌫️</div>
+            <h1 className="text-xl font-bold text-white mb-2">Couldn't load profile</h1>
+            <p className="text-gray-400 text-sm mb-6">{errorMsg}</p>
+            <Link href="/" className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 font-semibold text-sm inline-block transition-colors">
               Back to Home
             </Link>
           </div>
-        </div>
+        </motion.div>
       )}
 
-      {/* Content */}
+      {/* Main content */}
       {!loading && isOk && (
-        <>
-          {/* Header */}
-          <section className="px-6 pt-16 pb-10 flex items-center justify-center">
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-10 max-w-3xl w-full text-center backdrop-blur">
-              <div className="flex items-center justify-center mb-6">
-                {profile?.avatar ? (
-                  <Image
-                    src={profile.avatar}
-                    alt={profile?.personaName ?? "Avatar"}
-                    width={96}
-                    height={96}
-                    className="rounded-full border border-white/10 shadow"
-                  />
-                ) : (
-                  <div className="w-24 h-24 rounded-full bg-white/10 border border-white/10" />
-                )}
-              </div>
-              <h1 className="text-3xl font-extrabold mb-2">{profile?.personaName ?? "Unknown Player"}</h1>
-              <p className="text-sm text-gray-400">
-                SteamID: <span className="font-mono">{steamId}</span>
-              </p>
-              {profile?.profileUrl && (
-                <div className="mt-6">
-                  <a
-                    href={profile.profileUrl}
-                    target="_blank"
-                    className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 font-semibold inline-block"
-                  >
-                    View on Steam
-                  </a>
-                </div>
-              )}
-              {(data as ApiOk).isPrivate && (
-                <p className="text-amber-300 mt-4">
-                  This account’s game details are private. You can still view public summary info above.
-                </p>
-              )}
-            </div>
-          </section>
+        <div className="max-w-6xl mx-auto px-6 pb-24">
 
-          {/* Stats (Account Value formatted) */}
-          <section className="px-6 pb-10 max-w-6xl mx-auto">
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
-              <Stat title="Total Games" value={fmt(lib?.totalGames)} accent="text-blue-300" />
-              <Stat title="Total Playtime" value={fmtHours(lib?.totalMinutes)} sub="lifetime" accent="text-emerald-300" />
-              <Stat title="Never Played" value={fmt(lib?.neverPlayed)} sub="in your library" accent="text-pink-300" />
-              <Stat
-                title="Visibility"
-                value={profile?.visibility === 3 ? "Public" : profile?.visibility === 1 ? "Private" : "Unknown"}
-                accent="text-violet-300"
+          {/* ── Profile header ── */}
+          <motion.section
+            initial="hidden" animate="show" variants={stagger}
+            className="pt-12 pb-10"
+          >
+            <motion.div variants={fadeUp}
+              className="relative rounded-3xl bg-white/[0.03] border border-white/[0.08] p-8 md:p-10 backdrop-blur-sm overflow-hidden"
+            >
+              {/* Glow behind avatar */}
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-64 h-32 bg-blue-500/10 blur-3xl -z-10" />
+
+              <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6">
+                {/* Avatar */}
+                <div className="relative flex-shrink-0">
+                  {profile?.avatar ? (
+                    <Image
+                      src={profile.avatar}
+                      alt={profile?.personaName ?? "Avatar"}
+                      width={96} height={96}
+                      className="rounded-2xl border border-white/10 shadow-xl"
+                    />
+                  ) : (
+                    <div className="w-24 h-24 rounded-2xl bg-white/[0.06] border border-white/10" />
+                  )}
+                  <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-400 border-2 border-[#050a14]" />
+                </div>
+
+                {/* Info */}
+                <div className="flex-1 text-center sm:text-left">
+                  <h1 className="text-3xl font-black text-white mb-1">
+                    {profile?.personaName ?? "Unknown Player"}
+                  </h1>
+                  <p className="text-gray-500 text-xs font-mono mb-4">steamid: {steamId}</p>
+                  {(data as ApiOk).isPrivate && (
+                    <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-semibold mb-4">
+                      🔒 Private library — showing public info only
+                    </div>
+                  )}
+                  {profile?.profileUrl && (
+                    <a
+                      href={profile.profileUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.06] border border-white/[0.1] hover:bg-white/[0.1] text-sm font-semibold text-gray-300 hover:text-white transition-all"
+                    >
+                      <FaSteam size={14} className="text-blue-400" />
+                      View on Steam
+                      <FaExternalLinkAlt size={10} className="text-gray-500" />
+                    </a>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          </motion.section>
+
+          {/* ── Stats ── */}
+          <motion.section
+            initial="hidden" whileInView="show" viewport={{ once: true }}
+            variants={stagger} className="pb-16"
+          >
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+              <StatPill label="Total Games" value={fmt(lib?.totalGames)} color="from-blue-500/10 to-transparent" />
+              <StatPill label="Playtime" value={fmtHours(lib?.totalMinutes)} sub="lifetime" color="from-emerald-500/10 to-transparent" />
+              <StatPill label="Never Played" value={fmt(lib?.neverPlayed)} sub="in library" color="from-pink-500/10 to-transparent" />
+              <StatPill
+                label="Visibility"
+                value={profile?.visibility === 3 ? "Public" : profile?.visibility === 1 ? "Private" : "?"}
+                color="from-violet-500/10 to-transparent"
               />
-              <Stat
-                title="Account Value"
+              <StatPill
+                label="Library Value"
                 value={acctValue ? acctValue.currency : "—"}
                 sub={acctValue ? "estimated" : undefined}
-                accent="text-cyan-300"
+                color="from-cyan-500/10 to-transparent"
               />
             </div>
-          </section>
+          </motion.section>
 
-          {/* Recently Played */}
+          {/* ── Recently Played ── */}
           {!!lib?.recentGames?.length && (
-            <Section title="Recently Played">
-              <GameRow games={lib.recentGames.filter((g) => ownedSet.has(g.appid))} show2w />
-            </Section>
+            <section className="pb-16">
+              <SectionHeader label="Activity" title="Recently Played" />
+              <motion.div
+                initial="hidden" whileInView="show" viewport={{ once: true }}
+                variants={stagger}
+                className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
+              >
+                {lib.recentGames.filter((g) => ownedSet.has(g.appid)).map((g) => (
+                  <GameCard key={g.appid} game={g} show2w />
+                ))}
+              </motion.div>
+            </section>
           )}
 
-          {/* RECOMMENDATIONS (beta) */}
-          <section className="px-6 py-10 max-w-6xl mx-auto">
-            <h2 className="text-2xl font-bold mb-4">Recommendations (beta)</h2>
+          {/* ── Recommendations ── */}
+          <section className="pb-16">
+            <SectionHeader label="AI Picks" title="Recommended for You" />
 
-            {loadingRecs && <div className="text-gray-400">Crunching numbers…</div>}
-            {recErr && <div className="text-red-300">{recErr}</div>}
+            {loadingRecs && (
+              <div className="flex items-center gap-3 text-gray-400 text-sm">
+                <div className="w-4 h-4 rounded-full border-2 border-blue-500/30 border-t-blue-400 animate-spin" />
+                Crunching the catalog…
+              </div>
+            )}
+            {recErr && <p className="text-red-400 text-sm">{recErr}</p>}
 
             {!loadingRecs && !recErr && (
-              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-                {recs.map((g) => (
-                  <a
-                    key={g.appid}
-                    href={`https://store.steampowered.com/app/${g.appid}`}
-                    target="_blank"
-                    className="group rounded-xl overflow-hidden border border-white/10 bg-white/5 backdrop-blur hover:border-white/20 transition-colors"
-                  >
-                    <div className="relative w-full h-[140px] bg-black">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={g.header}
-                        alt={g.name}
-                        className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-                        loading="lazy"
-                      />
-                      <div className="absolute top-2 left-2 flex gap-2">
-                        {typeof g.score === "number" && <Badge>{Math.round(g.score * 100)}%</Badge>}
-                        {g.discount_pct ? <Badge>{g.discount_pct}% off</Badge> : null}
-                      </div>
-                    </div>
-                    <div className="p-4">
-                      <div className="font-semibold mb-1">{g.name}</div>
-                      <div className="text-sm text-gray-400">
-                        {typeof g.price_cents === "number" ? (
-                          <span>Price: {(g.price_cents / 100).toLocaleString()}</span>
-                        ) : (
-                          <span>View on store</span>
-                        )}
-                      </div>
-                    </div>
-                  </a>
-                ))}
-                {!recs.length && <div className="text-gray-400">No recommendations yet.</div>}
-              </div>
+              <motion.div
+                initial="hidden" animate="show" variants={stagger}
+                className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
+              >
+                {recs.map((g) => <RecCard key={g.appid} game={g} />)}
+                {!recs.length && (
+                  <p className="text-gray-500 text-sm col-span-full">
+                    No recommendations yet — your library may be empty or private.
+                  </p>
+                )}
+              </motion.div>
             )}
           </section>
 
-          {/* ALL GAMES – scrollable browser with filters */}
-          <section className="px-6 py-10 max-w-6xl mx-auto">
-            <h2 className="text-2xl font-bold mb-4">All Games</h2>
+          {/* ── All Games browser ── */}
+          <section className="pb-16">
+            <SectionHeader label="Library" title="All Games" />
 
-            {/* Filters bar */}
-            <div className="sticky top-2 z-[1] bg-black/30 backdrop-blur rounded-xl border border-white/10 p-4 mb-4">
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 items-center">
+            {/* Filter bar */}
+            <div className="sticky top-[61px] z-40 rounded-2xl bg-[#050a14]/90 border border-white/[0.08] backdrop-blur-xl p-4 mb-6">
+              <div className="flex flex-wrap gap-3 items-center">
                 <input
                   type="text"
-                  placeholder="Search by name…"
-                  className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 outline-none text-gray-100 placeholder:text-gray-400"
+                  placeholder="Search games…"
+                  className="px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500/50 transition-colors w-44"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
-                <div className="flex items-center gap-3">
-                  <label className="text-sm text-gray-300">Sort</label>
-                  <select
-                    className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 outline-none"
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value as any)}
-                  >
-                    <option value="hours">Playtime (desc)</option>
-                    <option value="recent">Recent (2 weeks)</option>
-                    <option value="name">Name (A–Z)</option>
-                  </select>
+                <select
+                  className="px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-gray-300 focus:outline-none focus:border-blue-500/50 transition-colors"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as any)}
+                >
+                  <option value="hours">Most played</option>
+                  <option value="recent">Recently played</option>
+                  <option value="name">A – Z</option>
+                </select>
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span>Min hrs</span>
+                  <input type="range" min={0} max={200} value={minHours}
+                    onChange={(e) => setMinHours(Number(e.target.value))} className="w-24 accent-blue-500" />
+                  <span className="font-mono w-6">{minHours}</span>
                 </div>
-                <div className="flex items-center gap-3">
-                  <label className="text-sm text-gray-300 whitespace-nowrap">Min hours</label>
-                  <input
-                    type="range"
-                    min={0}
-                    max={200}
-                    value={minHours}
-                    onChange={(e) => setMinHours(Number(e.target.value))}
-                    className="flex-1"
-                  />
-                  <span className="text-sm text-gray-300 w-10 text-right">{minHours}</span>
-                </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <Toggle label="Owned only" checked={ownedOnly} onChange={setOwnedOnly} />
+                <div className="flex flex-wrap gap-2 ml-auto">
+                  <Toggle label="Owned" checked={ownedOnly} onChange={setOwnedOnly} />
                   <Toggle label="Never played" checked={tagNeverPlayed} onChange={setTagNeverPlayed} />
                   <Toggle label="Under 2h" checked={tagUnder2h} onChange={setTagUnder2h} />
-                  <Toggle label="Recently played" checked={tagRecent} onChange={setTagRecent} />
+                  <Toggle label="Recent" checked={tagRecent} onChange={setTagRecent} />
                 </div>
               </div>
             </div>
 
-            {/* Scrollable grid */}
-            <div className="max-h-[70vh] overflow-y-auto pr-1">
-              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {/* Game grid */}
+            <div className="max-h-[72vh] overflow-y-auto pr-1 rounded-xl">
+              <motion.div
+                initial="hidden" animate="show" variants={stagger}
+                className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
+              >
                 {filtered.map((g) => (
-                  <a
-                    key={g.appid}
-                    href={`https://store.steampowered.com/app/${g.appid}`}
-                    target="_blank"
-                    className="group rounded-xl overflow-hidden border border-white/10 bg-white/5 backdrop-blur hover:border-white/20 transition-colors"
-                  >
-                    <div className="relative w-full h-[140px] bg-black">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={g.header}
-                        alt={g.name}
-                        className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-                        loading="lazy"
-                      />
-                      <div className="absolute top-2 left-2 flex gap-2">
-                        {g.hours <= 0 && <Badge>Never played</Badge>}
-                        {g.hours > 0 && g.hours < 2 && <Badge>Under 2h</Badge>}
-                        {(g.hours2w ?? 0) > 0 && <Badge>Recent</Badge>}
-                      </div>
-                    </div>
-                    <div className="p-4">
-                      <div className="font-semibold mb-1">{g.name}</div>
-                      <div className="text-sm text-gray-400">
-                        {`${g.hours} h total`}
-                        {(g.hours2w ?? 0) > 0 ? ` • ${(g.hours2w ?? 0)} h in 2 weeks` : ""}
-                      </div>
-                    </div>
-                  </a>
+                  <GameCard key={g.appid} game={g}
+                    badge={<>
+                      {g.hours <= 0 && <Badge>Never played</Badge>}
+                      {g.hours > 0 && g.hours < 2 && <Badge>Under 2h</Badge>}
+                      {(g.hours2w ?? 0) > 0 && <Badge>Recent</Badge>}
+                    </>}
+                  />
                 ))}
-                {!filtered.length && <div className="text-gray-400">No games match your filters.</div>}
-              </div>
+                {!filtered.length && (
+                  <p className="text-gray-500 text-sm col-span-full">No games match your filters.</p>
+                )}
+              </motion.div>
             </div>
           </section>
-        </>
+        </div>
       )}
 
-      {/* Local keyframes (match landing background) */}
-      <style jsx global>{`
-        @keyframes float-slow { 0% { transform: translate3d(0,0,0) scale(1); } 50% { transform: translate3d(30px,-20px,0) scale(1.05); } 100% { transform: translate3d(0,0,0) scale(1); } }
-        @keyframes float-slower { 0% { transform: translate3d(0,0,0) scale(1); } 50% { transform: translate3d(-40px,25px,0) scale(1.04); } 100% { transform: translate3d(0,0,0) scale(1); } }
-        @keyframes grid-pan { 0% { background-position: 0px 0px; } 100% { background-position: 40px 40px; } }
-      `}</style>
+      </div>{/* end z-10 wrapper */}
     </main>
   );
-}
-
-/* ---------- Background ---------- */
-function Background({
-  ready,
-  particlesOptions,
-}: {
-  ready: boolean;
-  particlesOptions: any;
-}) {
-  return (
-    <>
-      <div className="pointer-events-none absolute inset-0 -z-20">
-        <div className="absolute inset-0 opacity-[0.12] bg-[length:40px_40px] bg-[radial-gradient(circle,_rgba(255,255,255,0.14)_1px,_transparent_1px)] animate-[grid-pan_24s_linear_infinite]" />
-        <div className="absolute -top-32 -left-32 w-[45rem] h-[45rem] rounded-full blur-3xl opacity-40 bg-[radial-gradient(circle_at_30%_30%,rgba(59,130,246,0.45),transparent_60%),radial-gradient(circle_at_70%_70%,rgba(168,85,247,0.35),transparent_60%)] animate-[float-slow_22s_ease-in-out_infinite]" />
-        <div className="absolute bottom-[-16rem] right-[-16rem] w-[42rem] h-[42rem] rounded-full blur-3xl opacity-35 bg-[radial-gradient(circle_at_40%_40%,rgba(34,211,238,0.4),transparent_60%),radial-gradient(circle_at_70%_70%,rgba(59,130,246,0.35),transparent_60%)] animate-[float-slower_28s_ease-in-out_infinite]" />
-        <div className="absolute inset-0 -z-10 bg-gradient-to-br from-[#0b1220] via-[#0e1322] to-[#05070c]" />
-      </div>
-      <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(0,0,0,0.5))]" />
-      {ready && <Particles id="tsparticles" options={particlesOptions} className="absolute inset-0 -z-10" />}
-    </>
-  );
-}
-
-/* ---------- UI bits ---------- */
-function Stat({
-  title,
-  value,
-  sub,
-  accent,
-}: {
-  title: string;
-  value: string;
-  sub?: string;
-  accent?: string;
-}) {
-  return (
-    <div className="rounded-2xl bg-white/5 border border-white/10 p-6 backdrop-blur text-center">
-      <div className={`text-xs uppercase tracking-widest ${accent ?? "text-gray-300"} mb-2`}>{title}</div>
-      <div className="text-3xl font-extrabold">{value}</div>
-      {sub && <div className="text-xs text-gray-400 mt-1">{sub}</div>}
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="px-6 py-10 max-w-6xl mx-auto">
-      <h2 className="text-2xl font-bold mb-6">{title}</h2>
-      {children}
-    </section>
-  );
-}
-
-function GameRow({ games, show2w = false }: { games: GameLite[]; show2w?: boolean }) {
-  return (
-    <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-      {games.map((g) => (
-        <a
-          key={g.appid}
-          href={`https://store.steampowered.com/app/${g.appid}`}
-          target="_blank"
-          className="group rounded-xl overflow-hidden border border-white/10 bg-white/5 backdrop-blur hover:border-white/20 transition-colors"
-        >
-          <div className="relative w-full h-[140px] bg-black">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={g.header}
-              alt={g.name}
-              className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-              loading="lazy"
-            />
-          </div>
-          <div className="p-4">
-            <div className="font-semibold mb-1">{g.name}</div>
-            <div className="text-sm text-gray-400">
-              {show2w && typeof g.hours2w === "number"
-                ? `${g.hours2w} h in 2 weeks • ${g.hours} h total`
-                : `${g.hours} h total`}
-            </div>
-          </div>
-        </a>
-      ))}
-    </div>
-  );
-}
-
-function Badge({ children }: { children: React.ReactNode }) {
-  return <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-black/60 border border-white/10">{children}</span>;
-}
-
-function Toggle({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-      <input type="checkbox" className="accent-blue-500" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      <span className="text-sm text-gray-300">{label}</span>
-    </label>
-  );
-}
-
-/* ---------- helpers ---------- */
-function fmt(n: number | null | undefined) {
-  if (n == null) return "—";
-  return n.toLocaleString();
-}
-function fmtHours(minutes: number | null | undefined) {
-  if (minutes == null) return "—";
-  return `${(minutes / 60).toFixed(1)} h`;
 }
