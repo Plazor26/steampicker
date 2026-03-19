@@ -408,16 +408,24 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     if (cached) { setAcctValue(cached); return; }
 
     (async () => {
+      // Get all appids from the library
+      const appids = (lib?.allGames || lib?.ownedGames || []).map((g: any) => g.appid).filter((n: any) => typeof n === "number");
+      if (!appids.length) return;
+
       for (let attempt = 0; attempt < 3 && alive; attempt++) {
         try {
-          const r = await fetch(`/api/steam/value/${steamId}?cc=${cc}`, { cache: "no-store" });
+          const r = await fetch("/api/steam/value", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ appids, cc }),
+          });
           if (!alive || !r.ok) return;
           const j = await r.json().catch(() => null);
           if (!j?.ok) return;
 
           if (!j.currencyCode || j.value == null) {
-            const wait = 30000 * Math.pow(2, attempt);
-            console.log(`[VALUE] Steam blocked (attempt ${attempt + 1}/3), waiting ${wait / 1000}s...`);
+            const wait = 15000 * Math.pow(2, attempt);
+            console.log(`[VALUE] No data (attempt ${attempt + 1}/3), waiting ${wait / 1000}s...`);
             await new Promise(r => setTimeout(r, wait));
             continue;
           }
@@ -428,9 +436,8 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
             if (alive) setAcctValue(result);
             return;
           }
-          // Partial — don't show, keep retrying
-          console.log(`[VALUE] Partial (${j.counted}/${j.owned}), retrying in 20s...`);
-          await new Promise(r => setTimeout(r, 20000));
+          console.log(`[VALUE] Partial (${j.counted}/${j.owned}), retrying in 15s...`);
+          await new Promise(r => setTimeout(r, 15000));
         } catch { break; }
       }
     })();
@@ -542,7 +549,8 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
           try {
             const appidStr = results.map((r: any) => r.appid).join(",");
             console.log("[RECS] Fetching prices for", results.length, "games via proxy");
-            const priceRes = await fetch(`/api/steam/prices?appids=${appidStr}&cc=${cc || "US"}`);
+            // Fetch price + basic info (name, header_image, type) in one call
+            const priceRes = await fetch(`/api/steam/prices?appids=${appidStr}&cc=${cc || "US"}&filter=price_overview,basic`);
             if (priceRes.ok) {
               const pj = await priceRes.json();
               if (pj.ok && pj.data) {
@@ -550,38 +558,27 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
                 results = results.map((r: any) => {
                   const entry = pj.data[String(r.appid)];
                   if (!entry?.success) return r;
-                  const pov = entry.data?.price_overview;
-                  if (!pov) return r;
-                  priced++;
-                  return { ...r, price_cents: pov.final, discount_pct: pov.discount_percent, currencyCode: pov.currency };
-                });
-                console.log("[RECS] Applied prices to", priced, "games");
+                  const d = entry.data || {};
+                  // Filter non-games
+                  if (d.type && d.type !== "game" && d.type !== "dlc") return null;
+                  const pov = d.price_overview;
+                  if (pov) priced++;
+                  return {
+                    ...r,
+                    name: (r.name?.startsWith("App ") && d.name) ? d.name : r.name,
+                    header: d.header_image || r.header,
+                    price_cents: pov?.final ?? r.price_cents,
+                    discount_pct: pov?.discount_percent ?? r.discount_pct,
+                    currencyCode: pov?.currency ?? r.currencyCode,
+                  };
+                }).filter(Boolean) as typeof results;
+                console.log("[RECS] Applied prices to", priced, "games, fixed headers/names");
                 const curr = results.find((r: any) => r.currencyCode)?.currencyCode;
                 if (curr) setCatalogCurrency(curr);
               }
             }
           } catch (e) { console.error("[RECS] Price fetch error:", e); }
 
-          // Fix missing names via server proxy
-          const needNames = results.filter((r: any) => r.name?.startsWith("App "));
-          console.log("[RECS] Games missing names:", needNames.length);
-          if (needNames.length > 0) {
-            try {
-              const nameRes = await fetch(`/api/steam/prices?appids=${needNames.map((r: any) => r.appid).join(",")}&cc=${cc || "US"}&filter=basic`);
-              if (nameRes.ok) {
-                const nj = await nameRes.json();
-                if (nj.ok && nj.data) {
-                  results = results.map((r: any) => {
-                    if (!r.name?.startsWith("App ")) return r;
-                    const d = nj.data[String(r.appid)]?.data;
-                    if (!d) return r;
-                    if (d.type && d.type !== "game" && d.type !== "dlc") return null;
-                    return { ...r, name: d.name || r.name, header: d.header_image || r.header };
-                  }).filter(Boolean) as typeof results;
-                }
-              }
-            } catch {}
-          }
         }
 
         if (!alive) return;
