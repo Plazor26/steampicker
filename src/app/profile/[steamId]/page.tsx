@@ -519,43 +519,59 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
         const detectedCurr = catalogItems.find((c: any) => c.currencyCode)?.currencyCode ?? null;
         if (detectedCurr) setCatalogCurrency(detectedCurr);
 
-        // 3. Score by similarity overlap
-        const ownedAppIds = new Set((lib.ownedGames || []).map((g) => g.appid));
+        // 3. Score by similarity overlap — exclude ALL owned games (from every list)
+        const ownedAppIds = new Set([
+          ...(lib.ownedGames || []).map((g) => g.appid),
+          ...(lib.allGames || []).map((g: any) => g.appid),
+          ...(lib.recentGames || []).map((g) => g.appid),
+          ...(lib.topGames || []).map((g) => g.appid),
+        ]);
         let results = scoreAndRank(catalogItems as CandidateGame[], ownedAppIds, anchors.length, 30);
         if (!alive) return;
 
-        // 4. Fetch regional prices + names before displaying
+        // 4. Fetch prices (one batch, proven to work) + fix missing names
         if (results.length > 0) {
+          // Price fetch — single batch, price_overview only (reliable at 30 appids)
           try {
-            // Fetch full details (not just price) to get names for games SteamSpy missed
             const priceRes = await fetch(
-              `https://store.steampowered.com/api/appdetails?appids=${results.map((r: any) => r.appid).join(",")}&filters=price_overview,basic&cc=${cc || "US"}`
+              `https://store.steampowered.com/api/appdetails?appids=${results.map((r: any) => r.appid).join(",")}&filters=price_overview&cc=${cc || "US"}`
             );
             if (priceRes.ok) {
               const text = await priceRes.text();
               if (!text.startsWith("<")) {
-                const data = JSON.parse(text);
+                const priceData = JSON.parse(text);
                 results = results.map((r: any) => {
-                  const entry = data?.[String(r.appid)];
-                  if (!entry?.success) return r;
-                  const d = entry.data || {};
-                  // Filter out non-games (software, tools, videos, etc.)
-                  if (d.type && d.type !== "game" && d.type !== "dlc") return null;
-                  const pov = d.price_overview;
-                  return {
-                    ...r,
-                    name: (r.name?.startsWith("App ") ? d.name : r.name) || r.name,
-                    header: d.header_image || r.header,
-                    price_cents: pov?.final ?? r.price_cents,
-                    discount_pct: pov?.discount_percent ?? r.discount_pct,
-                    currencyCode: pov?.currency ?? r.currencyCode,
-                  };
-                }).filter(Boolean) as typeof results;
+                  const pov = priceData?.[String(r.appid)]?.data?.price_overview;
+                  if (!pov) return r;
+                  return { ...r, price_cents: pov.final, discount_pct: pov.discount_percent, currencyCode: pov.currency };
+                });
                 const curr = results.find((r: any) => r.currencyCode)?.currencyCode;
                 if (curr) setCatalogCurrency(curr);
               }
             }
           } catch {}
+
+          // Fix missing names — fetch individually (only a few will need this)
+          const needNames = results.filter((r: any) => r.name?.startsWith("App "));
+          if (needNames.length > 0) {
+            await Promise.all(needNames.map(async (r: any) => {
+              try {
+                // Use a minimal filter to avoid huge responses
+                const res = await fetch(
+                  `https://store.steampowered.com/api/appdetails?appids=${r.appid}&filters=basic&cc=${cc || "US"}`
+                );
+                if (!res.ok) return;
+                const text = await res.text();
+                if (text.startsWith("<")) return;
+                const d = JSON.parse(text)?.[String(r.appid)]?.data;
+                if (!d) return;
+                if (d.type && d.type !== "game" && d.type !== "dlc") { r.name = "__REMOVE__"; return; }
+                r.name = d.name || r.name;
+                r.header = d.header_image || r.header;
+              } catch {}
+            }));
+            results = results.filter((r: any) => r.name !== "__REMOVE__");
+          }
         }
 
         if (!alive) return;
