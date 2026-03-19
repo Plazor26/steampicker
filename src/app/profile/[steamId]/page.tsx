@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useState, use } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { prescreen, fetchEnrich, extractTopTags, type CandidateGame } from "@/lib/prescreener";
+import { scoreAndRank, buildUserDNA, fetchEnrich, extractTopTags, type CandidateGame } from "@/lib/prescreener";
 import { generateRoast, type RoastInput } from "@/lib/roast";
 import RoastCardModal from "@/components/RoastCardModal";
 import { FaSteam, FaArrowLeft, FaExternalLinkAlt, FaFire } from "react-icons/fa";
@@ -417,7 +417,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
             if (alive) setAcctValue(result);
             return;
           }
-          if (alive) setAcctValue(result);
+          // Partial — don't show, keep retrying
           console.log(`[VALUE] Partial (${j.counted}/${j.owned}), retrying in 20s...`);
           await new Promise(r => setTimeout(r, 20000));
         } catch { break; }
@@ -473,7 +473,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t]) => t);
   }, [libTags]);
 
-  /* Recommendations — two-phase: enrich taste pool → personalized catalog → score */
+  /* Recommendations: enrich taste → catalog with tags → score (no client-side SteamSpy) */
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -482,52 +482,35 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
       try {
         const cc = profile?.country || detectedCC || guessCCFromNavigator();
 
-        // Phase 1: Enrich the user's top games to extract their taste tags
+        // 1. Enrich user's top games to extract taste tags (localStorage-cached)
         const sortedOwned = [...(lib.allGames as GameLite[])].sort((a, b) => b.hours - a.hours);
         const recentlyPlayed = (lib.allGames as GameLite[]).filter(g => (g.hours2w ?? 0) > 0);
-        const tastePool = [...new Map([...sortedOwned.slice(0, 100), ...recentlyPlayed].map(g => [g.appid, g])).values()].slice(0, 120);
+        const tastePool = [...new Map([...sortedOwned.slice(0, 80), ...recentlyPlayed].map(g => [g.appid, g])).values()].slice(0, 100);
         const tasteEnrich = await fetchEnrich(tastePool.map(g => g.appid));
-        const topTags = extractTopTags(tasteEnrich, tastePool, 8);
+        const dna = buildUserDNA(tastePool, tasteEnrich);
 
-        console.log("[RECS] User top tags:", topTags.join(", "));
+        console.log("[RECS] User tags:", dna.topTags.join(", "));
+        console.log("[RECS] Synergies:", dna.synergies.map(([a, b]) => `${a}+${b}`).join(", "));
 
-        // Phase 2: Fetch personalized catalog using the user's top tags
-        const tagsParam = topTags.length > 0 ? `&tags=${encodeURIComponent(topTags.join(","))}` : "";
+        // 2. Fetch personalized catalog (server fetches SteamSpy tag lists)
+        const tagsParam = dna.topTags.length > 0 ? `&tags=${encodeURIComponent(dna.topTags.join(","))}` : "";
         const catalogItems = await fetchCatalog(cc, tagsParam);
-        const detectedCurr = catalogItems.find(c => c.currencyCode)?.currencyCode ?? null;
+        const detectedCurr = catalogItems.find((c: any) => c.currencyCode)?.currencyCode ?? null;
         if (detectedCurr) setCatalogCurrency(detectedCurr);
 
-        console.log("[RECS] Catalog size:", catalogItems.length, "(with personalized tag search)");
-
+        // 3. Score candidates — pure client-side, instant
         const ownedAppIds = new Set((lib.ownedGames || []).map((g) => g.appid));
-        const candidates: CandidateGame[] = catalogItems
-          .filter((c) => !ownedAppIds.has(c.appid))
-          .map((c) => ({ appid: c.appid, name: c.name, header: c.header || headerURL(c.appid), price_cents: c.price_cents ?? null, discount_pct: c.discount_pct ?? 0 }));
-        const results = await prescreen(lib.allGames as GameLite[], candidates, 30);
+        const results = scoreAndRank(catalogItems as CandidateGame[], dna, ownedAppIds, 30);
+
         if (!alive) return;
         setRecs(results);
-        // Enrich recs to get tags
-        if (results.length) {
-          try {
-            const enrichRes = await fetch("/api/steam/enrich", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ appids: results.map((r: any) => r.appid) }),
-            });
-            const enrichData = await enrichRes.json();
-            if (alive && enrichData?.ok) {
-              const tags: Record<number, string[]> = {};
-              for (const [id, info] of Object.entries(enrichData.items)) {
-                // Merge community tags + genres, deduplicated
-                const t = (info as any).tags || [];
-                const g = (info as any).genres || [];
-                const merged = [...new Set([...t, ...g])];
-                tags[Number(id)] = merged;
-              }
-              setRecTags(tags);
-            }
-          } catch {}
+
+        // Build tag sidebar from matched tags (already in results, no enrich needed)
+        const tags: Record<number, string[]> = {};
+        for (const r of results) {
+          tags[r.appid] = r.matchReasons || [];
         }
+        setRecTags(tags);
       } catch (e: any) { if (!alive) return; setRecErr(e?.message || "Failed to build recommendations."); }
       finally { if (alive) setLoadingRecs(false); }
     })();

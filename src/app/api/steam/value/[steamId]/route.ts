@@ -10,7 +10,7 @@ import { NextResponse, type NextRequest } from "next/server";
  */
 
 const BATCH_SIZE = 20;
-const BATCH_DELAY = 2000; // 2s between batches
+const BATCH_DELAY = 1500; // 1.5s between batches
 
 // In-memory cache (persists across requests)
 const cache = new Map<string, { cents: number; curr: string; ts: number }>();
