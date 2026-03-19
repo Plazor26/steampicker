@@ -690,7 +690,7 @@ export default function Home() {
             <FaSteam className="text-blue-400" />
             SteamPicker
           </div>
-          <p>© {new Date().getFullYear()} SteamPicker — Built by NeuraFate</p>
+          <p>© {new Date().getFullYear()} SteamPicker — Built by Plazor</p>
           <a
             href="https://github.com/Plazor26/steam-site"
             target="_blank"

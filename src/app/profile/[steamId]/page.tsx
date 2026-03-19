@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useState, use } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { prescreen, type CandidateGame } from "@/lib/prescreener";
+import { prescreen, fetchEnrich, extractTopTags, type CandidateGame } from "@/lib/prescreener";
 import { generateRoast, type RoastInput } from "@/lib/roast";
 import RoastCardModal from "@/components/RoastCardModal";
 import { FaSteam, FaArrowLeft, FaExternalLinkAlt, FaFire } from "react-icons/fa";
@@ -117,11 +117,11 @@ function normalizeCatalog(cat: any): Array<{
   }).filter(Boolean) as any[];
 }
 
-async function fetchCatalog(cc: string | null) {
+async function fetchCatalog(cc: string | null, extraParams = "") {
   const tries = [
-    `/api/steam/catalog?${new URLSearchParams({ ...(cc ? { cc } : {}), limit: "300" }).toString()}`,
-    `/api/steam/catalog?${new URLSearchParams({ ...(cc ? { cc } : {}) }).toString()}`,
-    `/api/steam/catalog`,
+    `/api/steam/catalog?${new URLSearchParams({ ...(cc ? { cc } : {}), limit: "300" }).toString()}${extraParams}`,
+    `/api/steam/catalog?${new URLSearchParams({ ...(cc ? { cc } : {}) }).toString()}${extraParams}`,
+    `/api/steam/catalog${extraParams ? `?${extraParams.replace(/^&/, "")}` : ""}`,
   ];
   for (const url of tries) {
     try {
@@ -329,8 +329,6 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
   const [tagRecent, setTagRecent] = useState(false);
   const [minHours, setMinHours] = useState(0);
   const [acctValue, setAcctValue] = useState<{ value: number; currency: string; currencyCode: string } | null>(null);
-  const [priceBreakdown, setPriceBreakdown] = useState<{ appid: number; name: string; usd: string | null }[] | null>(null);
-  const [showBreakdown, setShowBreakdown] = useState(false);
   const [recs, setRecs] = useState<any[]>([]);
   const [loadingRecs, setLoadingRecs] = useState(false);
   const [recErr, setRecErr] = useState<string | null>(null);
@@ -401,7 +399,6 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
 
         if (j?.ok && typeof j.value === "number") {
           setAcctValue({ value: j.value, currency: j.currency ?? `$${j.value.toFixed(2)}`, currencyCode: j.currencyCode ?? "USD" });
-          if (Array.isArray(j.breakdown)) setPriceBreakdown(j.breakdown);
         }
       } catch (e) {
         console.error("[CURRENCY DEBUG] Error:", e);
@@ -457,7 +454,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t]) => t);
   }, [libTags]);
 
-  /* Recommendations */
+  /* Recommendations — two-phase: enrich taste pool → personalized catalog → score */
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -465,10 +462,24 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
       setLoadingRecs(true); setRecErr(null);
       try {
         const cc = profile?.country || detectedCC || guessCCFromNavigator();
-        const catalogItems = await fetchCatalog(cc);
-        // Grab currency code from the first item that has one
+
+        // Phase 1: Enrich the user's top games to extract their taste tags
+        const sortedOwned = [...(lib.allGames as GameLite[])].sort((a, b) => b.hours - a.hours);
+        const recentlyPlayed = (lib.allGames as GameLite[]).filter(g => (g.hours2w ?? 0) > 0);
+        const tastePool = [...new Map([...sortedOwned.slice(0, 100), ...recentlyPlayed].map(g => [g.appid, g])).values()].slice(0, 120);
+        const tasteEnrich = await fetchEnrich(tastePool.map(g => g.appid));
+        const topTags = extractTopTags(tasteEnrich, tastePool, 8);
+
+        console.log("[RECS] User top tags:", topTags.join(", "));
+
+        // Phase 2: Fetch personalized catalog using the user's top tags
+        const tagsParam = topTags.length > 0 ? `&tags=${encodeURIComponent(topTags.join(","))}` : "";
+        const catalogItems = await fetchCatalog(cc, tagsParam);
         const detectedCurr = catalogItems.find(c => c.currencyCode)?.currencyCode ?? null;
         if (detectedCurr) setCatalogCurrency(detectedCurr);
+
+        console.log("[RECS] Catalog size:", catalogItems.length, "(with personalized tag search)");
+
         const ownedAppIds = new Set((lib.ownedGames || []).map((g) => g.appid));
         const candidates: CandidateGame[] = catalogItems
           .filter((c) => !ownedAppIds.has(c.appid))
@@ -682,46 +693,21 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
                 loading={!acctValue && isOk}
               />
             </div>
-          </motion.section>
 
-          {/* ── Price Breakdown (debug) ── */}
-          {priceBreakdown && priceBreakdown.length > 0 && (
-            <section className="pb-8">
-              <button
-                onClick={() => setShowBreakdown(!showBreakdown)}
-                className="text-xs text-gray-500 hover:text-gray-300 transition-colors flex items-center gap-2"
-              >
-                <span>{showBreakdown ? "▼" : "▶"}</span>
-                Library Value Breakdown ({priceBreakdown.length} games priced, {acctValue?.currency})
-              </button>
-              {showBreakdown && (
-                <div className="mt-3 max-h-[50vh] overflow-y-auto rounded-xl border border-white/[0.06] bg-white/[0.02]">
-                  <table className="w-full text-xs">
-                    <thead className="sticky top-0 bg-[#0a1020]">
-                      <tr className="text-gray-500 text-left">
-                        <th className="px-3 py-2 font-semibold">Game</th>
-                        <th className="px-3 py-2 font-semibold text-right">Base Price (USD)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {priceBreakdown.sort((a, b) => parseFloat(b.usd || "0") - parseFloat(a.usd || "0")).map((g) => (
-                        <tr key={g.appid} className="border-t border-white/[0.04] hover:bg-white/[0.02]">
-                          <td className="px-3 py-1.5 text-gray-300">{g.name}</td>
-                          <td className="px-3 py-1.5 text-gray-400 text-right font-mono">${g.usd}</td>
-                        </tr>
-                      ))}
-                      <tr className="border-t border-white/[0.08] font-bold">
-                        <td className="px-3 py-2 text-white">Total (USD)</td>
-                        <td className="px-3 py-2 text-white text-right font-mono">
-                          ${priceBreakdown.reduce((s, g) => s + parseFloat(g.usd || "0"), 0).toFixed(2)}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </section>
-          )}
+            {/* Slow loading notice */}
+            {!acctValue && isOk && (
+              <div className="mt-4 flex items-start gap-3 rounded-xl bg-amber-500/[0.06] border border-amber-500/20 px-4 py-3">
+                <span className="text-amber-400 text-sm mt-0.5">&#9888;</span>
+                <p className="text-xs text-amber-200/70 leading-relaxed">
+                  Library value is calculated using Steam&apos;s regional pricing API with rate limiting to avoid blocks — this can take a minute for large libraries.
+                  {" "}Want to help improve this?{" "}
+                  <a href="https://github.com/Plazor26/steam-site" target="_blank" rel="noopener noreferrer" className="text-amber-300 underline underline-offset-2 hover:text-amber-200 transition-colors">
+                    Contribute on GitHub
+                  </a>
+                </p>
+              </div>
+            )}
+          </motion.section>
 
           {/* ── Recently Played ── */}
           {!!lib?.recentGames?.length && (
