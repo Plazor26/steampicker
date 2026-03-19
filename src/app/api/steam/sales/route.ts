@@ -57,12 +57,16 @@ function parseDateRange(text: string, defaultYear: number): { start: string; end
     if (start && end) return { start, end };
   }
 
-  // Pattern: "Month D - Month D, YYYY" (cross-month)
+  // Pattern: "Month D - Month D, YYYY" (cross-month, year may be the end year)
   m = text.match(new RegExp(`(${monthPat})\\s+(\\d{1,2})\\s*[-\u2013]\\s*(${monthPat})\\s+(\\d{1,2}),?\\s*(\\d{4})?`, "i"));
   if (m) {
-    const year = m[5] ? parseInt(m[5]) : defaultYear;
-    const start = parseDate(`${m[1]} ${m[2]}`, year);
-    const end = parseDate(`${m[3]} ${m[4]}`, year);
+    const endYear = m[5] ? parseInt(m[5]) : defaultYear;
+    const startMonthNum = MONTHS[m[1].toLowerCase()];
+    const endMonthNum = MONTHS[m[3].toLowerCase()];
+    // If end month < start month (e.g., Dec-Jan), start year is endYear - 1
+    const startYear = (startMonthNum && endMonthNum && endMonthNum < startMonthNum) ? endYear - 1 : endYear;
+    const start = parseDate(`${m[1]} ${m[2]}`, startYear);
+    const end = parseDate(`${m[3]} ${m[4]}`, endYear);
     if (start && end) return { start, end };
   }
 
