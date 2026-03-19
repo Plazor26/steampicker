@@ -386,45 +386,40 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     return () => { alive = false; };
   }, []);
 
+  // Auto-fetch value: localStorage first, then API with retries
   useEffect(() => {
     if (!isOk || !ccReady) return;
     let alive = true;
     const cc = profile?.country || detectedCC || "US";
     const cacheKey = `sv:${steamId}:${cc}`;
 
-    // Check localStorage first
     const cached = lsGet<{ value: number; currency: string; currencyCode: string }>(cacheKey);
     if (cached) { setAcctValue(cached); return; }
 
     (async () => {
-      // Retry until we get a complete result with regional currency
-      for (let attempt = 0; attempt < 5 && alive; attempt++) {
+      for (let attempt = 0; attempt < 3 && alive; attempt++) {
         try {
           const r = await fetch(`/api/steam/value/${steamId}?cc=${cc}`, { cache: "no-store" });
           if (!alive || !r.ok) return;
           const j = await r.json().catch(() => null);
           if (!j?.ok) return;
 
-          // Skip if no currency detected (Steam is fully blocked)
           if (!j.currencyCode || j.value == null) {
-            // Exponential backoff: 30s, 60s, 120s, 240s, 480s
             const wait = 30000 * Math.pow(2, attempt);
-            console.log(`[VALUE] Steam blocked (attempt ${attempt + 1}/5), waiting ${wait / 1000}s...`);
+            console.log(`[VALUE] Steam blocked (attempt ${attempt + 1}/3), waiting ${wait / 1000}s...`);
             await new Promise(r => setTimeout(r, wait));
             continue;
           }
 
           const result = { value: j.value, currency: j.currency, currencyCode: j.currencyCode };
-
           if (!j.partial) {
             lsSet(cacheKey, result);
             if (alive) setAcctValue(result);
             return;
           }
-          // Partial — show what we have but keep trying
           if (alive) setAcctValue(result);
-          console.log(`[VALUE] Partial (${j.counted}/${j.owned}), retrying in 15s...`);
-          await new Promise(r => setTimeout(r, 15000));
+          console.log(`[VALUE] Partial (${j.counted}/${j.owned}), retrying in 20s...`);
+          await new Promise(r => setTimeout(r, 20000));
         } catch { break; }
       }
     })();

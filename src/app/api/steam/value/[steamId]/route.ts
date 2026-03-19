@@ -4,17 +4,15 @@ import { NextResponse, type NextRequest } from "next/server";
 /**
  * Library value calculator using Steam's regional pricing.
  *
- * Conservative rate limiting to avoid 403s:
- * - Concurrency: 2 requests at a time
- * - 300ms delay between batches
- * - In-memory cache persists across requests (24h TTL)
- * - If we hit a 403, we stop and return partial results
+ * Key optimization: batches up to 20 appids per request to Steam's appdetails.
+ * 180 games = 9 requests instead of 180. With 2s delays = ~18s total.
+ * No more rate limiting.
  */
 
-const CONCURRENCY = 1;       // one at a time
-const BATCH_DELAY = 1200;    // 1.2s between requests — stays under Steam's rate limit
+const BATCH_SIZE = 20;
+const BATCH_DELAY = 2000; // 2s between batches
 
-// In-memory cache — survives across requests in dev & prod
+// In-memory cache (persists across requests)
 const cache = new Map<string, { cents: number; curr: string; ts: number }>();
 const CACHE_TTL = 24 * 60 * 60 * 1000;
 
@@ -34,82 +32,73 @@ export async function GET(
     req.headers.get("cf-ipcountry") || undefined;
   const cc = (qCC || ipCC || "US").toUpperCase();
 
-  console.log("[VALUE] cc:", cc);
-
   const profRes = await fetch(`${req.nextUrl.origin}/api/steam/profile/${steamId}`, { cache: "no-store" });
   if (!profRes.ok) return NextResponse.json({ ok: false, error: `Profile ${profRes.status}` }, { status: 502 });
   const prof = await profRes.json();
   const all: any[] = prof?.library?.allGames ?? [];
-  if (!all.length) return NextResponse.json({ ok: true, value: 0, currency: "—", currencyCode: "USD", cc }, { status: 200 });
+  if (!all.length) return NextResponse.json({ ok: true, value: 0, currency: null, currencyCode: null, cc }, { status: 200 });
 
   const appids: number[] = all.map((g: any) => g.appid).filter((n: any) => typeof n === "number");
 
-  type P = { cents: number; curr: string } | null;
-  let blocked = false;
-  let consecutiveFails = 0;
+  type P = { cents: number; curr: string };
+  const results = new Map<number, P>();
 
-  async function fetchPrice(appid: number): Promise<P> {
-    // Always check cache first, even if Steam is blocked
-    const key = `${appid}:${cc}`;
-    const c = cache.get(key);
-    if (c && Date.now() - c.ts < CACHE_TTL) return { cents: c.cents, curr: c.curr };
-
-    // Only skip network if blocked
-    if (blocked) return null;
-
-    try {
-      const r = await fetch(
-        `https://store.steampowered.com/api/appdetails?appids=${appid}&filters=price_overview&cc=${cc}`,
-        { next: { revalidate: 86400 } }
-      );
-      if (r.status === 403 || !r.ok) { consecutiveFails++; if (consecutiveFails >= 2) blocked = true; return null; }
-      const text = await r.text();
-      if (text.startsWith("<")) { consecutiveFails++; if (consecutiveFails >= 2) blocked = true; return null; }
-      consecutiveFails = 0;
-      const pov = JSON.parse(text)?.[String(appid)]?.data?.price_overview;
-      if (!pov) return null; // free game
-      const cents = typeof pov.initial === "number" ? pov.initial : pov.final;
-      const curr = pov.currency;
-      if (typeof cents !== "number" || typeof curr !== "string") return null;
-      cache.set(key, { cents, curr, ts: Date.now() });
-      return { cents, curr };
-    } catch { return null; }
+  // Separate cached vs uncached
+  const uncached: number[] = [];
+  for (const id of appids) {
+    const c = cache.get(`${id}:${cc}`);
+    if (c && Date.now() - c.ts < CACHE_TTL) {
+      results.set(id, { cents: c.cents, curr: c.curr });
+    } else {
+      uncached.push(id);
+    }
   }
 
-  // Count how many are already cached
-  const cachedCount = appids.filter(id => {
-    const c = cache.get(`${id}:${cc}`);
-    return c && Date.now() - c.ts < CACHE_TTL;
-  }).length;
+  console.log("[VALUE] cc:", cc, "cached:", results.size, "need:", uncached.length);
 
-  console.log("[VALUE] Cached:", cachedCount, "/", appids.length, "Need to fetch:", appids.length - cachedCount);
+  // Batch fetch uncached (20 appids per request)
+  let blocked = false;
+  for (let i = 0; i < uncached.length && !blocked; i += BATCH_SIZE) {
+    const batch = uncached.slice(i, i + BATCH_SIZE);
+    try {
+      const url = `https://store.steampowered.com/api/appdetails?appids=${batch.join(",")}&filters=price_overview&cc=${cc}`;
+      const r = await fetch(url, { next: { revalidate: 86400 } });
+      if (r.status === 403 || !r.ok) { blocked = true; break; }
+      const text = await r.text();
+      if (text.startsWith("<")) { blocked = true; break; }
+      const j = JSON.parse(text);
 
-  // Process one at a time with delays between uncached fetches
-  const results: P[] = new Array(appids.length).fill(null);
-  for (let i = 0; i < appids.length; i++) {
-    const id = appids[i];
-    const wasCached = cache.has(`${id}:${cc}`) && Date.now() - cache.get(`${id}:${cc}`)!.ts < CACHE_TTL;
-    results[i] = await fetchPrice(id);
-    // Delay after uncached fetches to avoid rate limiting
-    if (!wasCached && !blocked && i < appids.length - 1) {
+      for (const id of batch) {
+        const pov = j?.[String(id)]?.data?.price_overview;
+        if (!pov) continue; // free game
+        const cents = typeof pov.initial === "number" ? pov.initial : pov.final;
+        const curr = pov.currency;
+        if (typeof cents !== "number" || typeof curr !== "string") continue;
+        results.set(id, { cents, curr });
+        cache.set(`${id}:${cc}`, { cents, curr, ts: Date.now() });
+      }
+    } catch { blocked = true; }
+
+    // Delay between batches (skip if last batch)
+    if (i + BATCH_SIZE < uncached.length && !blocked) {
       await new Promise(r => setTimeout(r, BATCH_DELAY));
     }
   }
 
-  const counted = results.filter(r => r != null).length;
-  const isPartial = counted < appids.length * 0.9; // partial if <90% priced
-  const currencyCode = results.find(r => r?.curr)?.curr || null;
+  const counted = results.size;
+  const isPartial = counted < appids.length * 0.9;
 
-  // If we got zero results or no currency, don't return fake data
-  if (counted === 0 || !currencyCode) {
-    console.log("[VALUE] FAILED: counted:", counted, "blocked:", blocked);
+  if (counted === 0) {
+    console.log("[VALUE] FAILED: no prices, blocked:", blocked);
     return NextResponse.json({
       ok: true, cc, currency: null, currencyCode: null, value: null,
       counted, owned: appids.length, partial: true,
     }, { status: 200 });
   }
 
-  const totalCents = results.reduce<number>((s, r) => s + (r?.cents || 0), 0);
+  const currencyCode = [...results.values()].find(r => r.curr)?.curr || "USD";
+  let totalCents = 0;
+  for (const r of results.values()) totalCents += r.cents;
   const value = totalCents / 100;
 
   let formatted: string;
@@ -119,7 +108,7 @@ export async function GET(
     formatted = `${currencyCode} ${value.toFixed(2)}`;
   }
 
-  console.log("[VALUE] Result:", currencyCode, value, "counted:", counted, "/", appids.length, isPartial ? "(partial)" : "(complete)");
+  console.log("[VALUE]", currencyCode, value, "counted:", counted, "/", appids.length, isPartial ? "(partial)" : "");
 
   return NextResponse.json({
     ok: true, cc, currency: formatted, currencyCode, value,
