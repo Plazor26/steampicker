@@ -47,6 +47,15 @@ function guessCCFromNavigator(): string | null {
   const part = String(loc).split("-")[1];
   return part && part.length === 2 ? part.toUpperCase() : null;
 }
+
+async function detectCCFromIP(): Promise<string | null> {
+  try {
+    const r = await fetch("https://ipapi.co/country/", { cache: "no-store" });
+    if (!r.ok) return null;
+    const code = (await r.text()).trim().toUpperCase();
+    return /^[A-Z]{2}$/.test(code) ? code : null;
+  } catch { return null; }
+}
 function headerURL(appid: number) {
   return `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appid}/header.jpg`;
 }
@@ -202,9 +211,11 @@ function RecCard({ game }: { game: any }) {
         <div className="font-semibold text-sm text-white truncate mb-1">{game.name}</div>
         <div className="text-xs text-gray-500 flex items-center justify-between">
           <span>
-            {typeof game.price_cents === "number"
-              ? `$${(game.price_cents / 100).toFixed(2)}`
-              : "View on store"}
+            {typeof game.price_cents === "number" && game.currencyCode
+              ? new Intl.NumberFormat(undefined, { style: "currency", currency: game.currencyCode }).format(game.price_cents / 100)
+              : typeof game.price_cents === "number"
+                ? `$${(game.price_cents / 100).toFixed(2)}`
+                : "View on store"}
           </span>
           <FaExternalLinkAlt size={10} className="text-gray-600 group-hover:text-blue-400 transition-colors" />
         </div>
@@ -250,6 +261,42 @@ function SectionHeader({ label, title }: { label: string; title: string }) {
   );
 }
 
+function GenreSidebar({ genres, selected, onSelect }: {
+  genres: string[];
+  selected: string | null;
+  onSelect: (g: string | null) => void;
+}) {
+  if (!genres.length) return null;
+  return (
+    <div className="w-40 flex-shrink-0 space-y-1">
+      <button
+        onClick={() => onSelect(null)}
+        className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 ${
+          !selected
+            ? "bg-blue-600/20 border border-blue-500/50 text-blue-300"
+            : "text-gray-400 hover:text-white hover:bg-white/[0.04]"
+        }`}
+      >
+        All
+      </button>
+      {genres.map((g) => (
+        <button
+          key={g}
+          onClick={() => onSelect(selected === g ? null : g)}
+          className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 truncate ${
+            selected === g
+              ? "bg-blue-600/20 border border-blue-500/50 text-blue-300"
+              : "text-gray-400 hover:text-white hover:bg-white/[0.04]"
+          }`}
+          title={g}
+        >
+          {g}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /* ─── Page ─── */
 export default function Page({ params }: { params: Promise<{ steamId: string }> }) {
   const { steamId } = use(params);
@@ -267,6 +314,11 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
   const [recs, setRecs] = useState<any[]>([]);
   const [loadingRecs, setLoadingRecs] = useState(false);
   const [recErr, setRecErr] = useState<string | null>(null);
+  const [detectedCC, setDetectedCC] = useState<string | null>(null);
+  const [recGenres, setRecGenres] = useState<Record<number, string[]>>({});
+  const [libGenres, setLibGenres] = useState<Record<number, string[]>>({});
+  const [selectedRecGenre, setSelectedRecGenre] = useState<string | null>(null);
+  const [selectedLibGenre, setSelectedLibGenre] = useState<string | null>(null);
 
   /* Fetch profile */
   useEffect(() => {
@@ -283,12 +335,22 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     return () => { alive = false; };
   }, [steamId]);
 
+  /* Detect country from IP (non-invasive) */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const cc = guessCCFromNavigator() || await detectCCFromIP();
+      if (alive && cc) setDetectedCC(cc);
+    })();
+    return () => { alive = false; };
+  }, []);
+
   /* Fetch account value */
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const cc = profile?.country || guessCCFromNavigator();
+        const cc = profile?.country || detectedCC || guessCCFromNavigator();
         const r = await fetch(`/api/steam/value/${steamId}${cc ? `?cc=${cc}` : ""}`, { cache: "no-store" });
         if (!alive || !r.ok) return;
         const j = await r.json().catch(() => null);
@@ -301,7 +363,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
       } catch {}
     })();
     return () => { alive = false; };
-  }, [steamId]);
+  }, [steamId, detectedCC]);
 
   /* Derived */
   const isOk = !!data && "ok" in data && data.ok;
@@ -323,13 +385,37 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     if (tagNeverPlayed) list = list.filter((g) => g.hours <= 0);
     if (tagUnder2h) list = list.filter((g) => g.hours > 0 && g.hours < 2);
     if (tagRecent) list = list.filter((g) => (g.hours2w ?? 0) > 0);
+    if (selectedLibGenre) list = list.filter((g) => (libGenres[g.appid] || []).includes(selectedLibGenre));
     switch (sortBy) {
       case "name": list = [...list].sort((a, b) => a.name.localeCompare(b.name)); break;
       case "recent": list = [...list].sort((a, b) => (b.hours2w ?? 0) - (a.hours2w ?? 0)); break;
       default: list = [...list].sort((a, b) => b.hours - a.hours);
     }
     return list;
-  }, [allGames, ownedOnly, query, minHours, tagNeverPlayed, tagUnder2h, tagRecent, sortBy, ownedSet]);
+  }, [allGames, ownedOnly, query, minHours, tagNeverPlayed, tagUnder2h, tagRecent, sortBy, ownedSet, selectedLibGenre, libGenres]);
+
+  /* Filtered recs by genre */
+  const filteredRecs = useMemo(() => {
+    if (!selectedRecGenre) return recs;
+    return recs.filter((g: any) => (recGenres[g.appid] || []).includes(selectedRecGenre));
+  }, [recs, selectedRecGenre, recGenres]);
+
+  /* Extract unique genres sorted by frequency */
+  const recGenreList = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const genres of Object.values(recGenres)) {
+      for (const g of genres) counts[g] = (counts[g] || 0) + 1;
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([g]) => g);
+  }, [recGenres]);
+
+  const libGenreList = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const genres of Object.values(libGenres)) {
+      for (const g of genres) counts[g] = (counts[g] || 0) + 1;
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([g]) => g);
+  }, [libGenres]);
 
   /* Recommendations */
   useEffect(() => {
@@ -338,7 +424,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
       if (!lib?.allGames?.length) { setRecs([]); return; }
       setLoadingRecs(true); setRecErr(null);
       try {
-        const cc = profile?.country || guessCCFromNavigator();
+        const cc = profile?.country || detectedCC || guessCCFromNavigator();
         const catalogItems = await fetchCatalog(cc);
         const ownedAppIds = new Set((lib.ownedGames || []).map((g) => g.appid));
         const candidates: CandidateGame[] = catalogItems
@@ -347,11 +433,58 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
         const results = await prescreen(lib.allGames as GameLite[], candidates, 30);
         if (!alive) return;
         setRecs(results);
+        // Enrich recs to get genres
+        if (results.length) {
+          try {
+            const enrichRes = await fetch("/api/steam/enrich", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ appids: results.map((r: any) => r.appid) }),
+            });
+            const enrichData = await enrichRes.json();
+            if (alive && enrichData?.ok) {
+              const genres: Record<number, string[]> = {};
+              for (const [id, info] of Object.entries(enrichData.items)) {
+                genres[Number(id)] = (info as any).genres || [];
+              }
+              setRecGenres(genres);
+            }
+          } catch {}
+        }
       } catch (e: any) { if (!alive) return; setRecErr(e?.message || "Failed to build recommendations."); }
       finally { if (alive) setLoadingRecs(false); }
     })();
     return () => { alive = false; };
-  }, [lib, profile]);
+  }, [lib, profile, detectedCC]);
+
+  /* Enrich library games for genre filters (background, batched) */
+  useEffect(() => {
+    if (!allGames.length) return;
+    let alive = true;
+    (async () => {
+      // Batch in chunks of 50 to avoid overwhelming the API
+      const BATCH = 50;
+      const genreMap: Record<number, string[]> = {};
+      for (let i = 0; i < allGames.length && alive; i += BATCH) {
+        const batch = allGames.slice(i, i + BATCH).map(g => g.appid);
+        try {
+          const r = await fetch("/api/steam/enrich", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ appids: batch }),
+          });
+          const d = await r.json();
+          if (d?.ok) {
+            for (const [id, info] of Object.entries(d.items)) {
+              genreMap[Number(id)] = (info as any).genres || [];
+            }
+            if (alive) setLibGenres(prev => ({ ...prev, ...genreMap }));
+          }
+        } catch {}
+      }
+    })();
+    return () => { alive = false; };
+  }, [allGames]);
 
   const loading = !data && !err;
   const errorMsg = !isOk ? err || (data as ApiErr | null)?.error || null : null;
@@ -520,17 +653,22 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
             {recErr && <p className="text-red-400 text-sm">{recErr}</p>}
 
             {!loadingRecs && !recErr && (
-              <motion.div
-                initial="hidden" animate="show" variants={stagger}
-                className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
-              >
-                {recs.map((g) => <RecCard key={g.appid} game={g} />)}
-                {!recs.length && (
-                  <p className="text-gray-500 text-sm col-span-full">
-                    No recommendations yet — your library may be empty or private.
-                  </p>
-                )}
-              </motion.div>
+              <div className="flex gap-6">
+                <GenreSidebar genres={recGenreList} selected={selectedRecGenre} onSelect={setSelectedRecGenre} />
+                <motion.div
+                  initial="hidden" animate="show" variants={stagger}
+                  className="flex-1 grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
+                >
+                  {filteredRecs.map((g: any) => <RecCard key={g.appid} game={g} />)}
+                  {!filteredRecs.length && (
+                    <p className="text-gray-500 text-sm col-span-full">
+                      {selectedRecGenre
+                        ? `No recommendations in "${selectedRecGenre}".`
+                        : "No recommendations yet — your library may be empty or private."}
+                    </p>
+                  )}
+                </motion.div>
+              </div>
             )}
           </section>
 
@@ -572,25 +710,28 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
               </div>
             </div>
 
-            {/* Game grid */}
-            <div className="max-h-[72vh] overflow-y-auto pr-1 rounded-xl">
-              <motion.div
-                initial="hidden" animate="show" variants={stagger}
-                className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
-              >
-                {filtered.map((g) => (
-                  <GameCard key={g.appid} game={g}
-                    badge={<>
-                      {g.hours <= 0 && <Badge>Never played</Badge>}
-                      {g.hours > 0 && g.hours < 2 && <Badge>Under 2h</Badge>}
-                      {(g.hours2w ?? 0) > 0 && <Badge>Recent</Badge>}
-                    </>}
-                  />
-                ))}
-                {!filtered.length && (
-                  <p className="text-gray-500 text-sm col-span-full">No games match your filters.</p>
-                )}
-              </motion.div>
+            {/* Sidebar + Game grid */}
+            <div className="flex gap-6">
+              <GenreSidebar genres={libGenreList} selected={selectedLibGenre} onSelect={setSelectedLibGenre} />
+              <div className="flex-1 max-h-[72vh] overflow-y-auto pr-1 rounded-xl">
+                <motion.div
+                  initial="hidden" animate="show" variants={stagger}
+                  className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3"
+                >
+                  {filtered.map((g) => (
+                    <GameCard key={g.appid} game={g}
+                      badge={<>
+                        {g.hours <= 0 && <Badge>Never played</Badge>}
+                        {g.hours > 0 && g.hours < 2 && <Badge>Under 2h</Badge>}
+                        {(g.hours2w ?? 0) > 0 && <Badge>Recent</Badge>}
+                      </>}
+                    />
+                  ))}
+                  {!filtered.length && (
+                    <p className="text-gray-500 text-sm col-span-full">No games match your filters.</p>
+                  )}
+                </motion.div>
+              </div>
             </div>
           </section>
         </div>
