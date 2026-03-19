@@ -110,8 +110,47 @@ export async function GET(req: NextRequest) {
             const total = pos + neg;
             g.reviewScore = total > 0 ? pos / total : 0.5;
             g.discount_pct = typeof j.discount === "string" ? parseInt(j.discount) : j.discount ?? 0;
-          } catch {}
+            enrichedCount++;
+          } catch { enrichFailCount++; }
         }));
+      }
+      console.log(`[CATALOG] SteamSpy enrichment: ${enrichedCount} ok, ${enrichFailCount} failed, ${toEnrich.length - enrichedCount - enrichFailCount} skipped`);
+
+      // Fill missing names from Steam's appdetails (batch of 100)
+      const stillMissing = [...gameData.entries()].filter(([, g]) => g.name.startsWith("App "));
+      if (stillMissing.length > 0) {
+        console.log(`[CATALOG] ${stillMissing.length} games missing names, trying Steam API...`);
+        for (let i = 0; i < stillMissing.length; i += 100) {
+          const batch = stillMissing.slice(i, i + 100).map(([id]) => id);
+          try {
+            const r = await fetch(
+              `https://store.steampowered.com/api/appdetails?appids=${batch.join(",")}&filters=basic&cc=${cc}`,
+              { cache: "no-store" }
+            );
+            if (!r.ok) continue;
+            const text = await r.text();
+            if (text.startsWith("<")) continue;
+            const j = JSON.parse(text);
+            let fixed = 0;
+            for (const id of batch) {
+              const d = j?.[String(id)]?.data;
+              if (!d?.name) continue;
+              const g = gameData.get(id);
+              if (!g) continue;
+              // Filter non-games
+              if (d.type && d.type !== "game" && d.type !== "dlc") {
+                gameData.delete(id);
+                continue;
+              }
+              g.name = d.name;
+              g.header = d.header_image || g.header;
+              fixed++;
+            }
+            console.log(`[CATALOG] Steam API fixed ${fixed} names`);
+          } catch {}
+        }
+        const remaining = [...gameData.values()].filter(g => g.name.startsWith("App ")).length;
+        if (remaining > 0) console.log(`[CATALOG] ${remaining} games still unnamed after Steam API`);
       }
     }
 

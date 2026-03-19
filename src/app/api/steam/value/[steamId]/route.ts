@@ -59,7 +59,7 @@ export async function GET(
     }
   }
 
-  console.log("[VALUE] cc:", cc, "cached:", results.size, "skipped:", skipped, "need:", uncached.length);
+  console.log("[VALUE] cc:", cc, "cached:", results.size, "skipped:", skipped, "need:", uncached.length, "prod:", IS_PROD, "delay:", BATCH_DELAY);
 
   // Batch fetch uncached (20 appids per request)
   let blocked = false;
