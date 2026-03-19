@@ -6,7 +6,9 @@ import Image from "next/image";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { prescreen, type CandidateGame } from "@/lib/prescreener";
-import { FaSteam, FaArrowLeft, FaExternalLinkAlt } from "react-icons/fa";
+import { generateRoast, type RoastInput } from "@/lib/roast";
+import RoastCardModal from "@/components/RoastCardModal";
+import { FaSteam, FaArrowLeft, FaExternalLinkAlt, FaFire } from "react-icons/fa";
 import BackgroundEffects from "@/components/BackgroundEffects";
 import { Analytics } from "@vercel/analytics/next";
 
@@ -278,30 +280,26 @@ function GenreSidebar({ genres, selected, onSelect }: {
 }) {
   if (!genres.length) return null;
   return (
-    <div className="w-40 flex-shrink-0 space-y-1">
-      <button
-        onClick={() => onSelect(null)}
-        className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 ${
-          !selected
-            ? "bg-blue-600/20 border border-blue-500/50 text-blue-300"
-            : "text-gray-400 hover:text-white hover:bg-white/[0.04]"
-        }`}
-      >
-        All
-      </button>
+    <div className="w-40 flex-shrink-0 space-y-1 hidden lg:block">
+      <button onClick={() => onSelect(null)} className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 ${!selected ? "bg-blue-600/20 border border-blue-500/50 text-blue-300" : "text-gray-400 hover:text-white hover:bg-white/[0.04]"}`}>All</button>
       {genres.map((g) => (
-        <button
-          key={g}
-          onClick={() => onSelect(selected === g ? null : g)}
-          className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 truncate ${
-            selected === g
-              ? "bg-blue-600/20 border border-blue-500/50 text-blue-300"
-              : "text-gray-400 hover:text-white hover:bg-white/[0.04]"
-          }`}
-          title={g}
-        >
-          {g}
-        </button>
+        <button key={g} onClick={() => onSelect(selected === g ? null : g)} className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 truncate ${selected === g ? "bg-blue-600/20 border border-blue-500/50 text-blue-300" : "text-gray-400 hover:text-white hover:bg-white/[0.04]"}`} title={g}>{g}</button>
+      ))}
+    </div>
+  );
+}
+
+function GenreBar({ genres, selected, onSelect }: {
+  genres: string[];
+  selected: string | null;
+  onSelect: (g: string | null) => void;
+}) {
+  if (!genres.length) return null;
+  return (
+    <div className="lg:hidden flex gap-2 overflow-x-auto pb-3 mb-4" style={{ WebkitOverflowScrolling: "touch" }}>
+      <button onClick={() => onSelect(null)} className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${!selected ? "bg-blue-600/20 border-blue-500/50 text-blue-300" : "bg-white/[0.04] border-white/[0.08] text-gray-400"}`}>All</button>
+      {genres.map((g) => (
+        <button key={g} onClick={() => onSelect(selected === g ? null : g)} className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all whitespace-nowrap ${selected === g ? "bg-blue-600/20 border-blue-500/50 text-blue-300" : "bg-white/[0.04] border-white/[0.08] text-gray-400"}`}>{g}</button>
       ))}
     </div>
   );
@@ -321,6 +319,8 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
   const [tagRecent, setTagRecent] = useState(false);
   const [minHours, setMinHours] = useState(0);
   const [acctValue, setAcctValue] = useState<{ value: number; currency: string } | null>(null);
+  const [priceBreakdown, setPriceBreakdown] = useState<{ appid: number; name: string; usd: string | null }[] | null>(null);
+  const [showBreakdown, setShowBreakdown] = useState(false);
   const [recs, setRecs] = useState<any[]>([]);
   const [loadingRecs, setLoadingRecs] = useState(false);
   const [recErr, setRecErr] = useState<string | null>(null);
@@ -329,6 +329,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
   const [libTags, setLibTags] = useState<Record<number, string[]>>({});
   const [selectedRecTag, setSelectedRecTag] = useState<string | null>(null);
   const [selectedLibTag, setSelectedLibTag] = useState<string | null>(null);
+  const [roastOpen, setRoastOpen] = useState(false);
 
   /* Fetch profile */
   useEffect(() => {
@@ -350,33 +351,53 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
   const profile: Profile | null = isOk ? (data as ApiOk).profile : null;
   const lib: Library | null = isOk ? (data as ApiOk).library : null;
 
-  /* Detect country from IP (non-invasive) */
+  /* Fetch account value — waits for BOTH profile AND CC detection */
+  const [ccReady, setCcReady] = useState(false);
   useEffect(() => {
+    // Mark CC as ready once detection finishes (success or failure)
     let alive = true;
     (async () => {
-      const cc = guessCCFromNavigator() || await detectCCFromIP();
-      if (alive && cc) setDetectedCC(cc);
+      // If navigator already gives a non-US result, use it immediately
+      const nav = guessCCFromNavigator();
+      if (nav && nav !== "US") { if (alive) { setDetectedCC(nav); setCcReady(true); } return; }
+      // Otherwise wait for IP detection
+      const ip = await detectCCFromIP();
+      if (alive) {
+        if (ip) setDetectedCC(ip);
+        setCcReady(true);
+      }
     })();
     return () => { alive = false; };
   }, []);
 
-  /* Fetch account value — waits for profile + CC detection */
   useEffect(() => {
-    if (!isOk) return; // wait for profile to load
+    if (!isOk || !ccReady) return; // wait for BOTH profile and CC
     let alive = true;
     (async () => {
       try {
-        const cc = profile?.country || detectedCC || guessCCFromNavigator();
-        const r = await fetch(`/api/steam/value/${steamId}${cc ? `?cc=${cc}` : ""}`, { cache: "no-store" });
+        const cc = profile?.country || detectedCC || "US";
+        const url = `/api/steam/value/${steamId}?cc=${cc}`;
+
+        console.log("[CURRENCY DEBUG] profile.country:", profile?.country ?? "null");
+        console.log("[CURRENCY DEBUG] detectedCC:", detectedCC ?? "null");
+        console.log("[CURRENCY DEBUG] Final CC:", cc);
+        console.log("[CURRENCY DEBUG] Fetching:", url);
+
+        const r = await fetch(url, { cache: "no-store" });
         if (!alive || !r.ok) return;
         const j = await r.json().catch(() => null);
+        console.log("[CURRENCY DEBUG] Response:", { cc: j?.cc, currencyCode: j?.currencyCode, value: j?.value });
+
         if (j?.ok && typeof j.value === "number") {
           setAcctValue({ value: j.value, currency: j.currency ?? `$${j.value.toFixed(2)}` });
+          if (Array.isArray(j.breakdown)) setPriceBreakdown(j.breakdown);
         }
-      } catch {}
+      } catch (e) {
+        console.error("[CURRENCY DEBUG] Error:", e);
+      }
     })();
     return () => { alive = false; };
-  }, [steamId, detectedCC, isOk]);
+  }, [steamId, detectedCC, isOk, ccReady]);
   const ownedSet = useMemo(() => new Set((lib?.ownedGames || []).map((g) => g.appid)), [lib]);
 
   const allGames: GameLite[] = useMemo(() => {
@@ -414,7 +435,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     for (const tags of Object.values(recTags)) {
       for (const t of tags) counts[t] = (counts[t] || 0) + 1;
     }
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 25).map(([t]) => t);
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 40).map(([t]) => t);
   }, [recTags]);
 
   const libTagList = useMemo(() => {
@@ -422,7 +443,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     for (const tags of Object.values(libTags)) {
       for (const t of tags) counts[t] = (counts[t] || 0) + 1;
     }
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 25).map(([t]) => t);
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 40).map(([t]) => t);
   }, [libTags]);
 
   /* Recommendations */
@@ -597,18 +618,29 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
                       🔒 Private library — showing public info only
                     </div>
                   )}
-                  {profile?.profileUrl && (
-                    <a
-                      href={profile.profileUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.06] border border-white/[0.1] hover:bg-white/[0.1] text-sm font-semibold text-gray-300 hover:text-white transition-all"
-                    >
-                      <FaSteam size={14} className="text-blue-400" />
-                      View on Steam
-                      <FaExternalLinkAlt size={10} className="text-gray-500" />
-                    </a>
-                  )}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    {profile?.profileUrl && (
+                      <a
+                        href={profile.profileUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.06] border border-white/[0.1] hover:bg-white/[0.1] text-sm font-semibold text-gray-300 hover:text-white transition-all"
+                      >
+                        <FaSteam size={14} className="text-blue-400" />
+                        View on Steam
+                        <FaExternalLinkAlt size={10} className="text-gray-500" />
+                      </a>
+                    )}
+                    {lib && lib.totalGames && lib.totalGames > 0 && (
+                      <button
+                        onClick={() => setRoastOpen(true)}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-orange-600/80 to-red-600/80 hover:from-orange-500 hover:to-red-500 border border-orange-500/30 text-sm font-bold text-white shadow-lg shadow-orange-600/20 transition-all"
+                      >
+                        <FaFire size={14} />
+                        Roast My Profile
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             </motion.div>
@@ -636,6 +668,45 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
               />
             </div>
           </motion.section>
+
+          {/* ── Price Breakdown (debug) ── */}
+          {priceBreakdown && priceBreakdown.length > 0 && (
+            <section className="pb-8">
+              <button
+                onClick={() => setShowBreakdown(!showBreakdown)}
+                className="text-xs text-gray-500 hover:text-gray-300 transition-colors flex items-center gap-2"
+              >
+                <span>{showBreakdown ? "▼" : "▶"}</span>
+                Library Value Breakdown ({priceBreakdown.length} games priced, {acctValue?.currency})
+              </button>
+              {showBreakdown && (
+                <div className="mt-3 max-h-[50vh] overflow-y-auto rounded-xl border border-white/[0.06] bg-white/[0.02]">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-[#0a1020]">
+                      <tr className="text-gray-500 text-left">
+                        <th className="px-3 py-2 font-semibold">Game</th>
+                        <th className="px-3 py-2 font-semibold text-right">Base Price (USD)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {priceBreakdown.sort((a, b) => parseFloat(b.usd || "0") - parseFloat(a.usd || "0")).map((g) => (
+                        <tr key={g.appid} className="border-t border-white/[0.04] hover:bg-white/[0.02]">
+                          <td className="px-3 py-1.5 text-gray-300">{g.name}</td>
+                          <td className="px-3 py-1.5 text-gray-400 text-right font-mono">${g.usd}</td>
+                        </tr>
+                      ))}
+                      <tr className="border-t border-white/[0.08] font-bold">
+                        <td className="px-3 py-2 text-white">Total (USD)</td>
+                        <td className="px-3 py-2 text-white text-right font-mono">
+                          ${priceBreakdown.reduce((s, g) => s + parseFloat(g.usd || "0"), 0).toFixed(2)}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          )}
 
           {/* ── Recently Played ── */}
           {!!lib?.recentGames?.length && (
@@ -666,7 +737,9 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
             {recErr && <p className="text-red-400 text-sm">{recErr}</p>}
 
             {!loadingRecs && !recErr && (
-              <div className="flex gap-6">
+              <div>
+                <GenreBar genres={recTagList} selected={selectedRecTag} onSelect={setSelectedRecTag} />
+                <div className="flex gap-6">
                 <GenreSidebar genres={recTagList} selected={selectedRecTag} onSelect={setSelectedRecTag} />
                 <motion.div
                   initial="hidden" animate="show" variants={stagger}
@@ -681,6 +754,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
                     </p>
                   )}
                 </motion.div>
+              </div>
               </div>
             )}
           </section>
@@ -723,7 +797,8 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
               </div>
             </div>
 
-            {/* Sidebar + Game grid */}
+            {/* Tag filters + Game grid */}
+            <GenreBar genres={libTagList} selected={selectedLibTag} onSelect={setSelectedLibTag} />
             <div className="flex gap-6">
               <GenreSidebar genres={libTagList} selected={selectedLibTag} onSelect={setSelectedLibTag} />
               <div className="flex-1 max-h-[72vh] overflow-y-auto pr-1 rounded-xl">
@@ -751,6 +826,44 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
       )}
 
       </div>{/* end z-10 wrapper */}
+
+      {/* Roast modal */}
+      {lib && profile && (() => {
+        const topGame = allGames.length > 0
+          ? { name: allGames.sort((a, b) => b.hours - a.hours)[0].name, hours: allGames.sort((a, b) => b.hours - a.hours)[0].hours }
+          : null;
+        const totalHrs = (lib.totalMinutes ?? 0) / 60;
+        const valNum = acctValue?.value ?? 0;
+        const currSym = (acctValue?.currency ?? "$").replace(/[0-9,.\s]/g, "").trim() || "$";
+        const roastInput: RoastInput = {
+          personaName: profile.personaName ?? "Unknown",
+          totalGames: lib.totalGames ?? 0,
+          totalHours: totalHrs,
+          neverPlayed: lib.neverPlayed ?? 0,
+          libraryValue: valNum,
+          currencySymbol: currSym,
+          topGame,
+          recentGames: lib.recentGames?.length ?? 0,
+        };
+        const roast = generateRoast(roastInput);
+        return (
+          <RoastCardModal
+            open={roastOpen}
+            onClose={() => setRoastOpen(false)}
+            personaName={profile.personaName ?? "Unknown"}
+            avatarUrl={profile.avatar}
+            totalGames={lib.totalGames ?? 0}
+            totalHours={totalHrs}
+            neverPlayed={lib.neverPlayed ?? 0}
+            libraryValue={acctValue?.currency ?? "—"}
+            libraryValueNum={valNum}
+            currencySymbol={currSym}
+            topGames={allGames.sort((a, b) => b.hours - a.hours).slice(0, 8).map(g => ({ name: g.name, hours: g.hours }))}
+            recentGames={(lib.recentGames || []).map(g => ({ appid: g.appid, name: g.name, hours: g.hours }))}
+            roast={roast}
+          />
+        );
+      })()}
     </main>
   );
 }

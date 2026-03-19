@@ -88,6 +88,14 @@ export async function GET(
     undefined;
   const cc = (qCC || ipCC || "US").toUpperCase();
 
+  // DEBUG: Currency detection trace
+  console.log("[VALUE DEBUG] ──────────────────────────────");
+  console.log("[VALUE DEBUG] URL:", req.url);
+  console.log("[VALUE DEBUG] qCC (from ?cc=):", qCC ?? "null");
+  console.log("[VALUE DEBUG] ipCC (from headers):", ipCC ?? "null");
+  console.log("[VALUE DEBUG] Final cc:", cc);
+  console.log("[VALUE DEBUG] USD value:", value, "counted:", counted, "/", appids.length);
+
   // Map country code to currency code
   const CC_TO_CURRENCY: Record<string, string> = {
     US: "USD", GB: "GBP", IN: "INR", JP: "JPY", CN: "CNY", KR: "KRW",
@@ -107,22 +115,33 @@ export async function GET(
   let convertedValue = value;
   let usedCurrency = "USD";
 
+  console.log("[VALUE DEBUG] targetCurrency:", targetCurrency);
+
   if (targetCurrency !== "USD") {
     try {
-      // Free currency conversion API (no key required)
-      const rateRes = await fetch(
-        `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json`,
-        { next: { revalidate: 86400 } }
-      );
+      const rateUrl = `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json`;
+      console.log("[VALUE DEBUG] Fetching rates from:", rateUrl);
+      const rateRes = await fetch(rateUrl, { next: { revalidate: 86400 } });
+      console.log("[VALUE DEBUG] Rate API status:", rateRes.status);
       if (rateRes.ok) {
         const rateData = await rateRes.json();
         const rate = rateData?.usd?.[targetCurrency.toLowerCase()];
+        console.log("[VALUE DEBUG] Rate for", targetCurrency, ":", rate);
         if (typeof rate === "number" && rate > 0) {
           convertedValue = value * rate;
           usedCurrency = targetCurrency;
+          console.log("[VALUE DEBUG] Converted:", value, "USD ->", convertedValue, usedCurrency);
+        } else {
+          console.log("[VALUE DEBUG] FAILED: rate is not a valid number");
         }
+      } else {
+        console.log("[VALUE DEBUG] FAILED: rate API returned", rateRes.status);
       }
-    } catch {}
+    } catch (e) {
+      console.log("[VALUE DEBUG] FAILED: rate fetch error:", e);
+    }
+  } else {
+    console.log("[VALUE DEBUG] No conversion needed (target is USD)");
   }
 
   const formatted = new Intl.NumberFormat(undefined, {
@@ -130,6 +149,16 @@ export async function GET(
     currency: usedCurrency,
     maximumFractionDigits: usedCurrency === "JPY" || usedCurrency === "KRW" ? 0 : 2,
   }).format(convertedValue);
+
+  // Build per-game price breakdown for debugging
+  const breakdown = appids.map((appid, i) => ({
+    appid,
+    name: all.find((g: any) => g.appid === appid)?.name ?? `App ${appid}`,
+    cents: results[i],
+    usd: results[i] != null ? (results[i]! / 100).toFixed(2) : null,
+  })).filter(g => g.cents != null && g.cents > 0);
+
+  console.log("[VALUE DEBUG] Final result:", { cc, targetCurrency, usedCurrency, valueUSD: value, converted: convertedValue, formatted });
 
   return NextResponse.json(
     {
@@ -141,6 +170,7 @@ export async function GET(
       valueUSD: value,
       counted,
       owned: appids.length,
+      breakdown, // per-game prices for verification
     },
     { status: 200, headers: { "cache-control": "s-maxage=300, stale-while-revalidate=600" } }
   );
