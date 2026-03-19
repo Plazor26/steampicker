@@ -49,12 +49,22 @@ function guessCCFromNavigator(): string | null {
 }
 
 async function detectCCFromIP(): Promise<string | null> {
-  try {
-    const r = await fetch("https://ipapi.co/country/", { cache: "no-store" });
-    if (!r.ok) return null;
-    const code = (await r.text()).trim().toUpperCase();
-    return /^[A-Z]{2}$/.test(code) ? code : null;
-  } catch { return null; }
+  // Try multiple free IP geolocation services with fallbacks
+  const endpoints = [
+    { url: "https://freeipapi.com/api/json", parse: (_: string, j: any) => j?.countryCode?.toUpperCase() },
+    { url: "https://ipapi.co/country/", parse: (t: string) => t.trim().toUpperCase() },
+  ];
+  for (const ep of endpoints) {
+    try {
+      const r = await fetch(ep.url, { cache: "no-store" });
+      if (!r.ok) continue;
+      const text = await r.text();
+      let code: string | undefined;
+      try { code = ep.parse(text, JSON.parse(text)); } catch { code = ep.parse(text, null); }
+      if (code && /^[A-Z]{2}$/.test(code)) return code;
+    } catch { continue; }
+  }
+  return null;
 }
 function headerURL(appid: number) {
   return `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appid}/header.jpg`;
@@ -335,6 +345,11 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     return () => { alive = false; };
   }, [steamId]);
 
+  /* Derived (placed before effects that depend on them) */
+  const isOk = !!data && "ok" in data && data.ok;
+  const profile: Profile | null = isOk ? (data as ApiOk).profile : null;
+  const lib: Library | null = isOk ? (data as ApiOk).library : null;
+
   /* Detect country from IP (non-invasive) */
   useEffect(() => {
     let alive = true;
@@ -345,8 +360,9 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
     return () => { alive = false; };
   }, []);
 
-  /* Fetch account value */
+  /* Fetch account value — waits for profile + CC detection */
   useEffect(() => {
+    if (!isOk) return; // wait for profile to load
     let alive = true;
     (async () => {
       try {
@@ -355,18 +371,12 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
         if (!alive || !r.ok) return;
         const j = await r.json().catch(() => null);
         if (j?.ok && typeof j.value === "number") {
-          // API returns pre-formatted currency string
           setAcctValue({ value: j.value, currency: j.currency ?? `$${j.value.toFixed(2)}` });
         }
       } catch {}
     })();
     return () => { alive = false; };
-  }, [steamId, detectedCC]);
-
-  /* Derived */
-  const isOk = !!data && "ok" in data && data.ok;
-  const profile: Profile | null = isOk ? (data as ApiOk).profile : null;
-  const lib: Library | null = isOk ? (data as ApiOk).library : null;
+  }, [steamId, detectedCC, isOk]);
   const ownedSet = useMemo(() => new Set((lib?.ownedGames || []).map((g) => g.appid)), [lib]);
 
   const allGames: GameLite[] = useMemo(() => {
