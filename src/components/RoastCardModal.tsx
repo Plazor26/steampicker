@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useRef, useState, useCallback, useEffect } from "react";
+import React, { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import RoastCard from "./RoastCard";
 import type { RoastResult } from "@/lib/roast";
-import { FaDownload, FaCopy, FaTimes, FaCheck, FaTwitter, FaRedditAlien, FaWhatsapp, FaInstagram, FaShareAlt } from "react-icons/fa";
+import { FaDownload, FaCopy, FaTimes, FaCheck, FaTwitter, FaRedditAlien, FaWhatsapp, FaInstagram, FaShareAlt, FaLink } from "react-icons/fa";
 import { SiBluesky } from "react-icons/si";
+import { encodeRoast, type ShareableRoast } from "@/lib/roastShare";
 
 type ShameGame = { appid: number; name: string; hours: number };
 
@@ -30,7 +31,6 @@ export default function RoastCardModal({
   open, onClose, steamId, personaName, avatarUrl, totalGames, totalHours,
   neverPlayed, libraryValue, libraryValueNum, currencySymbol, topGames, recentGames, roast,
 }: Props) {
-  const shareUrl = `https://steampicker.plazor.xyz/roast/${steamId}`;
   const cardRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
@@ -39,8 +39,37 @@ export default function RoastCardModal({
   const [shameAppId, setShameAppId] = useState<number | null>(null);
   const [scale, setScale] = useState(0.6);
   const [cardHeight, setCardHeight] = useState(600);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   const shameGame = recentGames.find(g => g.appid === shameAppId) ?? null;
+
+  // Build shareable URL with encoded roast data
+  const shareUrl = useMemo(() => {
+    const data: ShareableRoast = {
+      n: personaName,
+      a: avatarUrl || "",
+      g: totalGames,
+      h: totalHours,
+      u: neverPlayed,
+      v: libraryValue,
+      vn: libraryValueNum,
+      cs: currencySymbol,
+      hl: roast.headline,
+      ln: roast.lines,
+      rt: roast.rating,
+      gr: roast.grade,
+      gc: roast.gradeColor,
+    };
+    if (shameGame) {
+      data.sg = {
+        n: shameGame.name,
+        h: shameGame.hours,
+        img: `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${shameGame.appid}/header.jpg`,
+      };
+    }
+    const encoded = encodeRoast(data);
+    return `https://steampicker.plazor.xyz/roast/${steamId}?d=${encoded}`;
+  }, [personaName, avatarUrl, totalGames, totalHours, neverPlayed, libraryValue, libraryValueNum, currencySymbol, roast, shameGame, steamId]);
   const shameImageUrl = shameAppId
     ? `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${shameAppId}/header.jpg`
     : null;
@@ -231,6 +260,16 @@ export default function RoastCardModal({
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.06] border border-white/[0.1] hover:bg-white/[0.1] text-gray-300 font-semibold text-sm transition-colors"
               >
                 {copied ? <><FaCheck size={13} className="text-green-400" /> Copied!</> : <><FaCopy size={13} /> Copy</>}
+              </button>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(shareUrl);
+                  setLinkCopied(true);
+                  setTimeout(() => setLinkCopied(false), 2000);
+                }}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.06] border border-white/[0.1] hover:bg-white/[0.1] text-gray-300 font-semibold text-sm transition-colors"
+              >
+                {linkCopied ? <><FaCheck size={13} className="text-green-400" /> Link Copied!</> : <><FaLink size={13} /> Copy Link</>}
               </button>
 
               {/* Native Share (mobile/desktop with file support) */}
