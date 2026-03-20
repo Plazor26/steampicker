@@ -31,9 +31,10 @@ export async function GET(req: NextRequest) {
       discount_pct: number;
       price_cents: number | null;
       currencyCode?: string;
-      similarTo: string[]; // names of anchor games this is similar to
-      steamSimilarCount: number; // how many anchor games consider this "similar"
+      similarTo: string[];
+      steamSimilarCount: number;
       reviewScore: number;
+      genres: string[]; // top community tags from SteamSpy
     }>();
 
     // ── 1. For each anchor game, fetch Steam's "More Like This" ──
@@ -82,6 +83,7 @@ export async function GET(req: NextRequest) {
                 similarTo: [anchorName],
                 steamSimilarCount: 1,
                 reviewScore: 0.5,
+                genres: [],
               });
             }
           }
@@ -110,6 +112,10 @@ export async function GET(req: NextRequest) {
             const total = pos + neg;
             g.reviewScore = total > 0 ? pos / total : 0.5;
             g.discount_pct = typeof j.discount === "string" ? parseInt(j.discount) : j.discount ?? 0;
+            // Save top community tags (max 5 most-voted)
+            if (j.tags && typeof j.tags === "object") {
+              g.genres = Object.keys(j.tags).slice(0, 5);
+            }
             enrichedCount++;
           } catch { enrichFailCount++; }
         }));
@@ -181,6 +187,7 @@ export async function GET(req: NextRequest) {
             similarTo: [],
             steamSimilarCount: 0,
             reviewScore: 0.5,
+            genres: [],
           });
         }
       }
