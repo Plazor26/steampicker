@@ -4,7 +4,7 @@ import React, { useRef, useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import RoastCard from "./RoastCard";
 import type { RoastResult } from "@/lib/roast";
-import { FaDownload, FaCopy, FaTimes, FaCheck, FaTwitter, FaRedditAlien, FaDiscord } from "react-icons/fa";
+import { FaDownload, FaCopy, FaTimes, FaCheck, FaTwitter, FaRedditAlien, FaWhatsapp, FaInstagram, FaShareAlt } from "react-icons/fa";
 import { SiBluesky } from "react-icons/si";
 
 type ShameGame = { appid: number; name: string; hours: number };
@@ -102,6 +102,30 @@ export default function RoastCardModal({
       }, "image/png");
     } catch {}
   }, [capture]);
+
+  const handleNativeShare = useCallback(async () => {
+    try {
+      const canvas = await capture();
+      if (!canvas) return;
+      const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/png"));
+      if (!blob) return;
+      const file = new File([blob], `${personaName.replace(/[^a-zA-Z0-9]/g, "_")}_roast.png`, { type: "image/png" });
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({
+          title: `${personaName}'s Steam Roast`,
+          text: `My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet yours at steampicker.plazor.xyz`,
+          files: [file],
+        });
+      } else {
+        // Fallback: share without image
+        await navigator.share({
+          title: `${personaName}'s Steam Roast`,
+          text: `My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet yours at steampicker.plazor.xyz`,
+          url: "https://steampicker.plazor.xyz",
+        });
+      }
+    } catch {}
+  }, [capture, personaName, roast]);
 
   return (
     <AnimatePresence>
@@ -203,30 +227,34 @@ export default function RoastCardModal({
                 {copied ? <><FaCheck size={13} className="text-green-400" /> Copied!</> : <><FaCopy size={13} /> Copy</>}
               </button>
 
+              {/* Native Share (mobile/desktop with file support) */}
+              {typeof navigator !== "undefined" && !!navigator.share && (
+                <button
+                  onClick={handleNativeShare}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm transition-colors"
+                >
+                  <FaShareAlt size={13} /> Share
+                </button>
+              )}
+
               <div className="w-px h-6 bg-white/[0.08] mx-1 hidden sm:block" />
 
-              {/* Share links */}
-              <a
-                href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet roasted at steampicker.plazor.xyz`)}`}
-                target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors"
-              >
-                <FaTwitter size={14} /> X
-              </a>
-              <a
-                href={`https://bsky.app/intent/compose?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet roasted at steampicker.plazor.xyz`)}`}
-                target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors"
-              >
-                <SiBluesky size={14} /> Bsky
-              </a>
-              <a
-                href={`https://reddit.com/submit?title=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" (Grade: ${roast.grade})`)}&url=${encodeURIComponent("https://steampicker.plazor.xyz")}`}
-                target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors"
-              >
-                <FaRedditAlien size={14} /> Reddit
-              </a>
+              {/* Social share links */}
+              {[
+                { href: `https://twitter.com/intent/tweet?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet roasted at steampicker.plazor.xyz`)}`, icon: <FaTwitter size={14} />, label: "X" },
+                { href: `https://api.whatsapp.com/send?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet yours: https://steampicker.plazor.xyz`)}`, icon: <FaWhatsapp size={14} />, label: "WhatsApp" },
+                { href: `https://reddit.com/submit?title=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" (Grade: ${roast.grade})`)}&url=${encodeURIComponent("https://steampicker.plazor.xyz")}`, icon: <FaRedditAlien size={14} />, label: "Reddit" },
+                { href: `https://bsky.app/intent/compose?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade}\n\nsteampicker.plazor.xyz`)}`, icon: <SiBluesky size={14} />, label: "Bsky" },
+              ].map(({ href, icon, label }) => (
+                <a
+                  key={label}
+                  href={href}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors"
+                >
+                  {icon} {label}
+                </a>
+              ))}
             </div>
           </motion.div>
         </motion.div>
