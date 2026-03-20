@@ -464,12 +464,35 @@ export default function Home() {
           className="text-xl md:text-2xl text-gray-400 mb-10 h-8"
         >
           <Typewriter
-            words={[
-              "Find your next game in seconds.",
-              "AI picks. Spotify-level accuracy.",
-              "Spring Sale starts tomorrow.",
-              "Your Steam. Curated.",
-            ]}
+            words={(() => {
+              const base = [
+                "Find your next favorite game.",
+                "Your backlog, finally organized.",
+                "Recommendations that actually make sense.",
+                "Discover games you didn't know you owned.",
+                "Your Steam library, analyzed.",
+                "Built for gamers who buy more than they play.",
+                "Stop scrolling. Start playing.",
+              ];
+              // Add sale-aware lines based on live data
+              if (meta?.phase === "active" && meta.saleLabel) {
+                base.unshift(
+                  `${meta.saleLabel} is live. Find the best deals.`,
+                  `${meta.gamesOnSale?.toLocaleString() ?? "Thousands of"} games on sale right now.`,
+                  `${meta.saleLabel} deals, matched to your taste.`,
+                );
+              } else if (meta?.phase === "upcoming" && meta.saleLabel) {
+                const days = meta.saleTargetAt
+                  ? Math.ceil((new Date(meta.saleTargetAt).getTime() - Date.now()) / 86400000)
+                  : null;
+                if (days != null && days <= 7) {
+                  base.unshift(`${meta.saleLabel} starts in ${days} day${days !== 1 ? "s" : ""}. Get ready.`);
+                } else if (days != null && days <= 30) {
+                  base.unshift(`${meta.saleLabel} is coming. Know what to buy.`);
+                }
+              }
+              return base;
+            })()}
             loop={0}
             cursor
             cursorStyle="|"
