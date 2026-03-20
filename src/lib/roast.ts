@@ -488,33 +488,31 @@ export function generateRoast(input: RoastInput): RoastResult {
   const fmtV = `${currencySymbol}${libraryValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
   const fmtCPH = `${currencySymbol}${costPerHour.toFixed(2)}`;
 
-  // ── Headline: pick from the most extreme stat ──
+  // ── Headline: randomly pick from ANY applicable category for variety ──
   let headline = "";
-  const extremes = [
-    { score: neverPlayedPct, id: "shame" },
-    { score: totalHours > 0 ? Math.min(totalHours / 50, 100) : 0, id: "hours" },
-    { score: costPerHour > 0 ? Math.min(costPerHour * 8, 100) : 0, id: "cost" },
-    { score: totalGames > 200 ? Math.min(totalGames / 10, 100) : 0, id: "hoarder" },
-  ];
-  const top = extremes.sort((a, b) => b.score - a.score)[0];
+  const headlinePool: string[] = [];
 
-  switch (top.id) {
-    case "shame":
-      if (neverPlayedPct > 30) headline = pick(SHAME_HEADLINES)(neverPlayedPct, neverPlayed);
-      else headline = pick(SHAME_LOW_HEADLINES)(neverPlayedPct);
-      break;
-    case "hours":
-      if (totalHours > 5000) headline = pick(HOURS_HIGH_HEADLINES)(fmtH, (totalHours / 8760).toFixed(1));
-      else if (totalHours > 1000) headline = pick(HOURS_MED_HEADLINES)(fmtH);
-      else headline = pick(HOURS_LOW_HEADLINES)(fmtH);
-      break;
-    case "cost":
-      headline = pick(COST_HEADLINES)(fmtCPH);
-      break;
-    case "hoarder":
-      headline = pick(HOARDER_HEADLINES)(totalGames.toLocaleString());
-      break;
+  // Add all applicable headlines to the pool
+  if (neverPlayedPct > 30) {
+    SHAME_HEADLINES.forEach(fn => headlinePool.push(fn(neverPlayedPct, neverPlayed)));
+  } else {
+    SHAME_LOW_HEADLINES.forEach(fn => headlinePool.push(fn(neverPlayedPct)));
   }
+  if (totalHours > 5000) {
+    HOURS_HIGH_HEADLINES.forEach(fn => headlinePool.push(fn(fmtH, (totalHours / 8760).toFixed(1))));
+  } else if (totalHours > 1000) {
+    HOURS_MED_HEADLINES.forEach(fn => headlinePool.push(fn(fmtH)));
+  } else {
+    HOURS_LOW_HEADLINES.forEach(fn => headlinePool.push(fn(fmtH)));
+  }
+  if (costPerHour > 2) {
+    COST_HEADLINES.forEach(fn => headlinePool.push(fn(fmtCPH)));
+  }
+  if (totalGames > 100) {
+    HOARDER_HEADLINES.forEach(fn => headlinePool.push(fn(totalGames.toLocaleString())));
+  }
+
+  headline = pick(headlinePool);
 
   // ── Supporting lines (one per category) ──
 
