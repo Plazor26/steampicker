@@ -8,9 +8,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { scoreAndRank, fetchEnrich, pickAnchors, type CandidateGame } from "@/lib/prescreener";
 import { generateRoast, type RoastInput } from "@/lib/roast";
 import RoastCardModal from "@/components/RoastCardModal";
-import { FaSteam, FaArrowLeft, FaExternalLinkAlt, FaFire } from "react-icons/fa";
+import { FaGamepad, FaArrowLeft, FaExternalLinkAlt, FaFire } from "react-icons/fa";
 import BackgroundEffects from "@/components/BackgroundEffects";
-import { Analytics } from "@vercel/analytics/next";
 
 /* ─── Types ─── */
 type Profile = {
@@ -671,7 +670,6 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
 
   return (
     <main className="relative min-h-screen text-gray-100 overflow-x-hidden">
-      <Analytics />
 
       <BackgroundEffects />
       <div className="relative z-10">
@@ -681,7 +679,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2 text-sm font-semibold text-gray-400 hover:text-white transition-colors">
             <FaArrowLeft size={12} />
-            <FaSteam className="text-blue-400" />
+            <FaGamepad className="text-blue-400" />
             <span>SteamPicker</span>
           </Link>
           {profile?.personaName && (
@@ -772,7 +770,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.06] border border-white/[0.1] hover:bg-white/[0.1] text-sm font-semibold text-gray-300 hover:text-white transition-all"
                       >
-                        <FaSteam size={14} className="text-blue-400" />
+                        <FaGamepad size={14} className="text-blue-400" />
                         View on Steam
                         <FaExternalLinkAlt size={10} className="text-gray-500" />
                       </a>

@@ -17,7 +17,6 @@ type RoastCanvasInput = {
 };
 
 const W = 800;
-const H = 800;
 const PAD = 40;
 
 const GC: Record<string, { bg: string; border: string; text: string }> = {
@@ -72,6 +71,30 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxW: number): st
 
 export async function renderRoastCanvas(input: RoastCanvasInput): Promise<HTMLCanvasElement> {
   const scale = 2; // retina
+
+  // Pre-calculate content height using a temp canvas for text measurement
+  const measureCanvas = document.createElement("canvas");
+  measureCanvas.width = 1; measureCanvas.height = 1;
+  const mCtx = measureCanvas.getContext("2d")!;
+  mCtx.font = "italic 700 19px 'Segoe UI', system-ui, sans-serif";
+  const preHeadLines = wrapText(mCtx, `\u201C${input.roast.headline}\u201D`, W - PAD * 2 - 52);
+  const preHeadH = Math.max(60, preHeadLines.length * 26 + 28);
+  mCtx.font = "400 13px 'Segoe UI', system-ui, sans-serif";
+  let preRoastH = 0;
+  for (const line of input.roast.lines) {
+    const wrapped = wrapText(mCtx, line, W - PAD * 2 - 24);
+    preRoastH += wrapped.length * 19 + 6;
+  }
+
+  const avSection = 64 + 20; // avatar + gap
+  const shameSection = input.shameGame ? 140 + 20 : 0;
+  const headSection = preHeadH + 20;
+  const roastSection = preRoastH + 8;
+  const statsSection = 24 + 52 + 24; // gap + stats + gap
+  const footerSection = 28 + PAD; // footer + bottom pad
+
+  const H = PAD + avSection + shameSection + headSection + roastSection + statsSection + footerSection;
+
   const canvas = document.createElement("canvas");
   canvas.width = W * scale;
   canvas.height = H * scale;
@@ -144,7 +167,7 @@ export async function renderRoastCanvas(input: RoastCanvasInput): Promise<HTMLCa
   ctx.fillText(input.roast.grade, gradeX + 27, y + 37);
   ctx.textAlign = "left";
 
-  y += avSize + 16;
+  y += avSize + 20;
 
   // ── Shame Game ──
   if (input.shameGame) {
@@ -188,7 +211,7 @@ export async function renderRoastCanvas(input: RoastCanvasInput): Promise<HTMLCa
     ctx.font = "400 11px 'Segoe UI', system-ui, sans-serif";
     ctx.fillText(`${Math.round(input.shameGame.hours)}h of questionable life choices`, PAD + 16, y + shH - 9);
 
-    y += shH + 14;
+    y += shH + 20;
   }
 
   // ── Headline quote ──
@@ -214,7 +237,7 @@ export async function renderRoastCanvas(input: RoastCanvasInput): Promise<HTMLCa
     ctx.fillText(line, PAD + 22, y + 28 + i * 26);
   });
 
-  y += headH + 16;
+  y += headH + 20;
 
   // ── Roast lines ──
   ctx.font = "400 13px 'Segoe UI', system-ui, sans-serif";
@@ -233,8 +256,9 @@ export async function renderRoastCanvas(input: RoastCanvasInput): Promise<HTMLCa
     y += wrapped.length * 19 + 6;
   }
 
-  // ── Stats row ── (push to bottom area)
-  const statsY = H - PAD - 75;
+  // ── Stats row ──
+  y += 24;
+  const statsY = y;
   const statW = (W - PAD * 2 - 32) / 5;
   const cph = input.totalHours > 0 ? input.libraryValueNum / input.totalHours : 0;
   const playedPct = input.totalGames > 0 ? Math.round(((input.totalGames - input.neverPlayed) / input.totalGames) * 100) : 0;
@@ -267,7 +291,8 @@ export async function renderRoastCanvas(input: RoastCanvasInput): Promise<HTMLCa
   });
 
   // ── Footer ──
-  const footY = H - PAD + 2;
+  y += 52 + 24; // stats height + gap
+  const footY = y;
   // Verdict badge
   roundRect(ctx, PAD, footY - 18, 170, 28, 8);
   ctx.fillStyle = gc.bg;
