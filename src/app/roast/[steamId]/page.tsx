@@ -5,6 +5,7 @@ export async function generateMetadata(
 ): Promise<Metadata> {
   const { steamId } = await params;
   const siteUrl = process.env.NEXT_PUBLIC_BASE_URL || "https://steampicker.plazor.xyz";
+  const ogImage = `${siteUrl}/api/og?id=${steamId}`;
   return {
     title: "Steam Profile Roast — SteamPicker",
     description: "See this Steam profile get roasted. Get yours at SteamPicker.",
@@ -14,8 +15,9 @@ export async function generateMetadata(
       url: `${siteUrl}/roast/${steamId}`,
       siteName: "SteamPicker",
       type: "website",
+      images: [{ url: ogImage, width: 1200, height: 630 }],
     },
-    twitter: { card: "summary_large_image" },
+    twitter: { card: "summary_large_image", images: [ogImage] },
   };
 }
 
@@ -26,66 +28,24 @@ export default async function RoastSharePage({
 }) {
   const { steamId } = await params;
   const siteUrl = process.env.NEXT_PUBLIC_BASE_URL || "https://steampicker.plazor.xyz";
-  const ogImageUrl = `${siteUrl}/roast/${steamId}/opengraph-image`;
+  const ogImage = `${siteUrl}/api/og?id=${steamId}`;
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background: "#050a14",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "24px",
-        fontFamily: "sans-serif",
-      }}
-    >
-      {/* Roast card image */}
+    <main className="min-h-screen bg-[#050a14] flex flex-col items-center justify-center p-6">
       <img
-        src={ogImageUrl}
+        src={ogImage}
         alt="Steam Profile Roast"
-        style={{
-          width: "100%",
-          maxWidth: 720,
-          borderRadius: 16,
-          border: "1px solid rgba(255,255,255,0.08)",
-        }}
+        className="w-full max-w-[720px] rounded-2xl border border-white/[0.08]"
       />
-
-      {/* CTA */}
-      <div
-        style={{
-          marginTop: 32,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: 16,
-        }}
-      >
+      <div className="mt-8 flex flex-col items-center gap-4">
         <a
           href={`/profile/${steamId}`}
-          style={{
-            padding: "12px 32px",
-            borderRadius: 12,
-            background: "linear-gradient(135deg, #3b82f6, #6366f1)",
-            color: "white",
-            fontWeight: 700,
-            fontSize: 16,
-            textDecoration: "none",
-          }}
+          className="px-8 py-3 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-500 text-white font-bold text-base hover:from-blue-400 hover:to-indigo-400 transition-all"
         >
           View Full Profile
         </a>
-        <a
-          href="/"
-          style={{
-            color: "#64748b",
-            fontSize: 14,
-            textDecoration: "none",
-          }}
-        >
-          Get your own roast at <span style={{ color: "#3b82f6" }}>SteamPicker</span>
+        <a href="/" className="text-gray-500 text-sm hover:text-blue-400 transition-colors">
+          Get your own roast at <span className="text-blue-400">SteamPicker</span>
         </a>
       </div>
     </main>
