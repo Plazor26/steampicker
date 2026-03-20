@@ -33,6 +33,7 @@ export default function RoastCardModal({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [shareMsg, setShareMsg] = useState<string | null>(null);
   const [shameAppId, setShameAppId] = useState<number | null>(null);
   const [scale, setScale] = useState(0.6);
 
@@ -56,20 +57,36 @@ export default function RoastCardModal({
   const capture = useCallback(async () => {
     if (!cardRef.current) return null;
     const html2canvas = (await import("html2canvas")).default;
-    // html2canvas can't parse Tailwind CSS 4's lab() color functions.
-    // Clone the card into a detached container with no stylesheets so html2canvas
-    // only sees inline styles (which use hex/rgba, not lab()).
+    // Clone into a detached container at EXACT 800x800 (no scale transform)
+    // to avoid proportion distortion from the modal's CSS scale.
     const clone = cardRef.current.cloneNode(true) as HTMLElement;
+    // Force exact dimensions on the clone
+    clone.style.width = "800px";
+    clone.style.height = "800px";
+    clone.style.transform = "none";
+    clone.style.position = "absolute";
+
     const container = document.createElement("div");
-    container.style.cssText = "position:fixed;left:-9999px;top:0;z-index:-1;";
+    container.style.cssText = "position:fixed;left:-9999px;top:0;z-index:-1;width:800px;height:800px;overflow:hidden;";
     container.appendChild(clone);
     document.body.appendChild(container);
+
+    // Wait for any images to load in the clone
+    const imgs = clone.querySelectorAll("img");
+    await Promise.all([...imgs].map(img =>
+      img.complete ? Promise.resolve() : new Promise(r => { img.onload = r; img.onerror = r; })
+    ));
+
     try {
       return await html2canvas(clone, {
-        scale: 2,
+        width: 800,
+        height: 800,
+        scale: 2, // 1600x1600 output for crisp quality
         useCORS: true,
         allowTaint: true,
         backgroundColor: "#050a14",
+        // Don't let html2canvas read stylesheets (avoids lab() crash)
+        ignoreElements: (el) => el.tagName === "STYLE" || el.tagName === "LINK",
       });
     } finally {
       document.body.removeChild(container);
@@ -239,23 +256,45 @@ export default function RoastCardModal({
 
               <div className="w-px h-6 bg-white/[0.08] mx-1 hidden sm:block" />
 
-              {/* Social share links */}
+              {/* Social share buttons — copy image to clipboard, then open share URL */}
               {[
-                { href: `https://twitter.com/intent/tweet?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet roasted at steampicker.plazor.xyz`)}`, icon: <FaTwitter size={14} />, label: "X" },
-                { href: `https://api.whatsapp.com/send?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet yours: https://steampicker.plazor.xyz`)}`, icon: <FaWhatsapp size={14} />, label: "WhatsApp" },
-                { href: `https://reddit.com/submit?title=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" (Grade: ${roast.grade})`)}&url=${encodeURIComponent("https://steampicker.plazor.xyz")}`, icon: <FaRedditAlien size={14} />, label: "Reddit" },
-                { href: `https://bsky.app/intent/compose?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade}\n\nsteampicker.plazor.xyz`)}`, icon: <SiBluesky size={14} />, label: "Bsky" },
-              ].map(({ href, icon, label }) => (
-                <a
+                { href: `https://twitter.com/intent/tweet?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet roasted at steampicker.plazor.xyz`)}`, icon: <FaTwitter size={14} />, label: "X", copyFirst: true },
+                { href: `https://api.whatsapp.com/send?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet yours: https://steampicker.plazor.xyz`)}`, icon: <FaWhatsapp size={14} />, label: "WhatsApp", copyFirst: true },
+                { href: `https://www.instagram.com/`, icon: <FaInstagram size={14} />, label: "Instagram", copyFirst: true },
+                { href: `https://reddit.com/submit?title=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" (Grade: ${roast.grade})`)}&url=${encodeURIComponent("https://steampicker.plazor.xyz")}`, icon: <FaRedditAlien size={14} />, label: "Reddit", copyFirst: false },
+                { href: `https://bsky.app/intent/compose?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade}\n\nsteampicker.plazor.xyz`)}`, icon: <SiBluesky size={14} />, label: "Bsky", copyFirst: false },
+              ].map(({ href, icon, label, copyFirst }) => (
+                <button
                   key={label}
-                  href={href}
-                  target="_blank" rel="noopener noreferrer"
-                  className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors"
+                  onClick={async () => {
+                    if (copyFirst) {
+                      try {
+                        const canvas = await capture();
+                        if (canvas) {
+                          const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/png"));
+                          if (blob) {
+                            await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+                            setShareMsg(`Image copied! Paste it in ${label}.`);
+                            setTimeout(() => setShareMsg(null), 3000);
+                          }
+                        }
+                      } catch {}
+                    }
+                    window.open(href, "_blank", "noopener,noreferrer");
+                  }}
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors cursor-pointer"
                 >
                   {icon} {label}
-                </a>
+                </button>
               ))}
             </div>
+
+            {/* Share feedback message */}
+            {shareMsg && (
+              <div className="mt-3 px-4 py-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-300 text-xs font-medium text-center">
+                {shareMsg}
+              </div>
+            )}
           </motion.div>
         </motion.div>
       )}
