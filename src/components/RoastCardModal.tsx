@@ -246,61 +246,42 @@ export default function RoastCardModal({
               <div className="w-px h-6 bg-white/[0.08] mx-1 hidden sm:block" />
 
               {/* Social share buttons */}
-              {[
-                { icon: <FaWhatsapp size={14} />, label: "WhatsApp", mode: "native" as const },
-                { icon: <FaInstagram size={14} />, label: "Instagram", mode: "native" as const },
-                { icon: <FaTwitter size={14} />, label: "X", mode: "url" as const, href: `https://twitter.com/intent/tweet?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nCheck yours: ${shareUrl}`)}` },
-                { icon: <FaRedditAlien size={14} />, label: "Reddit", mode: "url" as const, href: `https://reddit.com/submit?title=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" (Grade: ${roast.grade})`)}&url=${encodeURIComponent(shareUrl)}` },
-                { icon: <SiBluesky size={14} />, label: "Bsky", mode: "url" as const, href: `https://bsky.app/intent/compose?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade}\n\n${shareUrl}`)}` },
-              ].map((btn) => (
-                <button
-                  key={btn.label}
-                  onClick={async () => {
-                    try {
-                      const canvas = await capture();
-                      if (!canvas) return;
-                      const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/png"));
-                      if (!blob) return;
-                      const fileName = `${personaName.replace(/[^a-zA-Z0-9]/g, "_")}_roast.png`;
-                      const file = new File([blob], fileName, { type: "image/png" });
-                      const shareText = `My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nCheck yours: ${shareUrl}`;
-
-                      // Try native share with image (works on mobile)
-                      if (navigator.canShare?.({ files: [file] })) {
-                        await navigator.share({ text: shareText, files: [file] });
-                        return;
-                      }
-
-                      // Desktop: download image + copy text to clipboard + open share URL
-                      // Step 1: Auto-download the image
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      a.download = fileName;
-                      a.click();
-                      URL.revokeObjectURL(url);
-
-                      // Step 2: Copy share text to clipboard
-                      await navigator.clipboard.writeText(shareText);
-                      setShareMsg(`Image downloaded & text copied! Attach image in ${btn.label}.`);
-                      setTimeout(() => setShareMsg(null), 4000);
-
-                      // Step 3: Open the platform
-                      const shareHref = btn.mode === "url" && btn.href
-                        ? btn.href
-                        : btn.label === "WhatsApp"
-                          ? `https://web.whatsapp.com/`
-                          : btn.label === "Instagram"
-                            ? `https://www.instagram.com/`
-                            : null;
-                      if (shareHref) window.open(shareHref, "_blank", "noopener,noreferrer");
-                    } catch {}
-                  }}
-                  className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors cursor-pointer"
-                >
-                  {btn.icon} {btn.label}
-                </button>
-              ))}
+              {(() => {
+                const text = `My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})`;
+                const fullText = `${text}\n\nCheck yours: ${shareUrl}`;
+                const buttons = [
+                  { icon: <FaWhatsapp size={14} />, label: "WhatsApp", href: `https://api.whatsapp.com/send?text=${encodeURIComponent(fullText)}` },
+                  { icon: <FaTwitter size={14} />, label: "X", href: `https://twitter.com/intent/tweet?text=${encodeURIComponent(fullText)}` },
+                  { icon: <FaRedditAlien size={14} />, label: "Reddit", href: `https://reddit.com/submit?title=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrl)}` },
+                  { icon: <SiBluesky size={14} />, label: "Bsky", href: `https://bsky.app/intent/compose?text=${encodeURIComponent(fullText)}` },
+                ];
+                return buttons.map(({ icon, label, href }) => (
+                  <button
+                    key={label}
+                    onClick={async () => {
+                      // Mobile: try native share with image first
+                      try {
+                        const canvas = await capture();
+                        if (canvas) {
+                          const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/png"));
+                          if (blob) {
+                            const file = new File([blob], `${personaName.replace(/[^a-zA-Z0-9]/g, "_")}_roast.png`, { type: "image/png" });
+                            if (navigator.canShare?.({ files: [file] })) {
+                              await navigator.share({ text: fullText, files: [file] });
+                              return;
+                            }
+                          }
+                        }
+                      } catch {}
+                      // Desktop fallback: just open the share URL
+                      window.open(href, "_blank", "noopener,noreferrer");
+                    }}
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors cursor-pointer"
+                  >
+                    {icon} {label}
+                  </button>
+                ));
+              })()}
             </div>
 
             {/* Share feedback message */}
