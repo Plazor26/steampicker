@@ -261,25 +261,39 @@ export default function RoastCardModal({
                       if (!canvas) return;
                       const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/png"));
                       if (!blob) return;
-                      const file = new File([blob], `${personaName.replace(/[^a-zA-Z0-9]/g, "_")}_roast.png`, { type: "image/png" });
+                      const fileName = `${personaName.replace(/[^a-zA-Z0-9]/g, "_")}_roast.png`;
+                      const file = new File([blob], fileName, { type: "image/png" });
                       const shareText = `My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nCheck yours: ${shareUrl}`;
 
-                      if (btn.mode === "native" && navigator.canShare?.({ files: [file] })) {
-                        // Native share with image file (works on mobile WhatsApp/Instagram)
+                      // Try native share with image (works on mobile)
+                      if (navigator.canShare?.({ files: [file] })) {
                         await navigator.share({ text: shareText, files: [file] });
                         return;
                       }
 
-                      // Desktop fallback: copy image to clipboard then open URL
-                      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-                      setShareMsg(`Image copied! Paste it in ${btn.label}.`);
-                      setTimeout(() => setShareMsg(null), 3000);
+                      // Desktop: download image + copy text to clipboard + open share URL
+                      // Step 1: Auto-download the image
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = fileName;
+                      a.click();
+                      URL.revokeObjectURL(url);
 
-                      if (btn.mode === "url" && btn.href) {
-                        window.open(btn.href, "_blank", "noopener,noreferrer");
-                      } else if (btn.label === "WhatsApp") {
-                        window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(shareText)}`, "_blank", "noopener,noreferrer");
-                      }
+                      // Step 2: Copy share text to clipboard
+                      await navigator.clipboard.writeText(shareText);
+                      setShareMsg(`Image downloaded & text copied! Attach image in ${btn.label}.`);
+                      setTimeout(() => setShareMsg(null), 4000);
+
+                      // Step 3: Open the platform
+                      const shareHref = btn.mode === "url" && btn.href
+                        ? btn.href
+                        : btn.label === "WhatsApp"
+                          ? `https://web.whatsapp.com/`
+                          : btn.label === "Instagram"
+                            ? `https://www.instagram.com/`
+                            : null;
+                      if (shareHref) window.open(shareHref, "_blank", "noopener,noreferrer");
                     } catch {}
                   }}
                   className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors cursor-pointer"
