@@ -245,35 +245,46 @@ export default function RoastCardModal({
 
               <div className="w-px h-6 bg-white/[0.08] mx-1 hidden sm:block" />
 
-              {/* Social share buttons — copy image to clipboard, then open share URL */}
+              {/* Social share buttons */}
               {[
-                { href: `https://twitter.com/intent/tweet?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nCheck yours: ${shareUrl}`)}`, icon: <FaTwitter size={14} />, label: "X", copyFirst: true },
-                { href: `https://api.whatsapp.com/send?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nCheck yours: ${shareUrl}`)}`, icon: <FaWhatsapp size={14} />, label: "WhatsApp", copyFirst: true },
-                { href: `https://www.instagram.com/`, icon: <FaInstagram size={14} />, label: "Instagram", copyFirst: true },
-                { href: `https://reddit.com/submit?title=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" (Grade: ${roast.grade})`)}&url=${encodeURIComponent(shareUrl)}`, icon: <FaRedditAlien size={14} />, label: "Reddit", copyFirst: false },
-                { href: `https://bsky.app/intent/compose?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade}\n\n${shareUrl}`)}`, icon: <SiBluesky size={14} />, label: "Bsky", copyFirst: false },
-              ].map(({ href, icon, label, copyFirst }) => (
+                { icon: <FaWhatsapp size={14} />, label: "WhatsApp", mode: "native" as const },
+                { icon: <FaInstagram size={14} />, label: "Instagram", mode: "native" as const },
+                { icon: <FaTwitter size={14} />, label: "X", mode: "url" as const, href: `https://twitter.com/intent/tweet?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nCheck yours: ${shareUrl}`)}` },
+                { icon: <FaRedditAlien size={14} />, label: "Reddit", mode: "url" as const, href: `https://reddit.com/submit?title=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" (Grade: ${roast.grade})`)}&url=${encodeURIComponent(shareUrl)}` },
+                { icon: <SiBluesky size={14} />, label: "Bsky", mode: "url" as const, href: `https://bsky.app/intent/compose?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade}\n\n${shareUrl}`)}` },
+              ].map((btn) => (
                 <button
-                  key={label}
+                  key={btn.label}
                   onClick={async () => {
-                    if (copyFirst) {
-                      try {
-                        const canvas = await capture();
-                        if (canvas) {
-                          const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/png"));
-                          if (blob) {
-                            await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-                            setShareMsg(`Image copied! Paste it in ${label}.`);
-                            setTimeout(() => setShareMsg(null), 3000);
-                          }
-                        }
-                      } catch {}
-                    }
-                    window.open(href, "_blank", "noopener,noreferrer");
+                    try {
+                      const canvas = await capture();
+                      if (!canvas) return;
+                      const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, "image/png"));
+                      if (!blob) return;
+                      const file = new File([blob], `${personaName.replace(/[^a-zA-Z0-9]/g, "_")}_roast.png`, { type: "image/png" });
+                      const shareText = `My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nCheck yours: ${shareUrl}`;
+
+                      if (btn.mode === "native" && navigator.canShare?.({ files: [file] })) {
+                        // Native share with image file (works on mobile WhatsApp/Instagram)
+                        await navigator.share({ text: shareText, files: [file] });
+                        return;
+                      }
+
+                      // Desktop fallback: copy image to clipboard then open URL
+                      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+                      setShareMsg(`Image copied! Paste it in ${btn.label}.`);
+                      setTimeout(() => setShareMsg(null), 3000);
+
+                      if (btn.mode === "url" && btn.href) {
+                        window.open(btn.href, "_blank", "noopener,noreferrer");
+                      } else if (btn.label === "WhatsApp") {
+                        window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(shareText)}`, "_blank", "noopener,noreferrer");
+                      }
+                    } catch {}
                   }}
                   className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-gray-400 hover:text-white text-sm font-semibold transition-colors cursor-pointer"
                 >
-                  {icon} {label}
+                  {btn.icon} {btn.label}
                 </button>
               ))}
             </div>
