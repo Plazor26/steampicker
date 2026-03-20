@@ -4,7 +4,7 @@ import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Typewriter } from "react-simple-typewriter";
 import { motion, useInView, useAnimation } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { FaGithub, FaSteam, FaFire, FaTags, FaLayerGroup, FaArrowRight } from "react-icons/fa";
+import { FaGithub, FaGamepad, FaFire, FaTags, FaLayerGroup, FaArrowRight } from "react-icons/fa";
 import BackgroundEffects from "@/components/BackgroundEffects";
 
 /* ─── Animated counter ─── */
@@ -495,7 +495,7 @@ export default function Home() {
               disabled={submitting === "login"}
               className="w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl font-bold text-base bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-cyan-500 text-white shadow-lg shadow-blue-600/30 transition-all duration-200 disabled:opacity-60"
             >
-              <FaSteam size={20} />
+              <FaGamepad size={20} />
               {submitting === "login" ? "Redirecting…" : "Sign in through Steam"}
             </motion.button>
             <p className="text-center text-xs text-gray-400 mt-2">This site is not associated with Valve Corp.</p>
@@ -667,7 +667,7 @@ export default function Home() {
               Built by gamers, for gamers
             </h2>
             <p className="text-gray-400 text-lg mb-8 max-w-xl mx-auto">
-              No ads. No tracking. No stored data. SteamPicker is open and transparent.
+              No ads. No personal data stored. SteamPicker is open and transparent.
             </p>
             <motion.a
               whileHover={{ scale: 1.04 }}
@@ -687,10 +687,10 @@ export default function Home() {
       <footer className="border-t border-white/[0.06] py-12 px-6">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6 text-sm text-gray-500">
           <div className="flex items-center gap-2 font-semibold text-gray-300">
-            <FaSteam className="text-blue-400" />
+            <FaGamepad className="text-blue-400" />
             SteamPicker
           </div>
-          <p>© {new Date().getFullYear()} SteamPicker — Built by Plazor</p>
+          <p>© {new Date().getFullYear()} SteamPicker — Built by <a href="https://plazor.xyz" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 transition-colors">Plazor</a></p>
           <a
             href="https://github.com/Plazor26/steam-site"
             target="_blank"

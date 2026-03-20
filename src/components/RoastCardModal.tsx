@@ -36,23 +36,36 @@ export default function RoastCardModal({
   const [shareMsg, setShareMsg] = useState<string | null>(null);
   const [shameAppId, setShameAppId] = useState<number | null>(null);
   const [scale, setScale] = useState(0.6);
+  const [cardHeight, setCardHeight] = useState(600);
 
   const shameGame = recentGames.find(g => g.appid === shameAppId) ?? null;
   const shameImageUrl = shameAppId
     ? `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${shameAppId}/header.jpg`
     : null;
 
-  // Fit the 1200px card into the container
+  // Fit the 800px-wide card into the viewport
   useEffect(() => {
     if (!open) return;
     const update = () => {
-      const size = Math.min(window.innerWidth * 0.9, window.innerHeight * 0.65, 700);
-      setScale(size / 800);
+      const maxW = Math.min(window.innerWidth * 0.9, 700);
+      setScale(maxW / 800);
     };
     update();
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
   }, [open]);
+
+  // Measure card's actual rendered height
+  useEffect(() => {
+    if (!cardRef.current || !open) return;
+    const obs = new ResizeObserver(entries => {
+      for (const e of entries) setCardHeight(e.contentRect.height);
+    });
+    obs.observe(cardRef.current);
+    // Also measure immediately
+    setCardHeight(cardRef.current.offsetHeight);
+    return () => obs.disconnect();
+  }, [open, shameAppId, roast]);
 
   const capture = useCallback(async () => {
     const { renderRoastCanvas } = await import("@/lib/roastCanvas");
@@ -144,13 +157,13 @@ export default function RoastCardModal({
               <FaTimes size={12} />
             </button>
 
-            {/* Card — exactly fills the modal width */}
+            {/* Card — scales to fit modal width, height matches content */}
             <div
               ref={wrapperRef}
               className="rounded-2xl border border-white/[0.08] shadow-2xl mb-4 overflow-hidden"
-              style={{ width: Math.round(800 * scale), height: Math.round(800 * scale) }}
+              style={{ width: Math.round(800 * scale), height: Math.round(cardHeight * scale) }}
             >
-              <div style={{ transform: `scale(${scale})`, transformOrigin: "top left", width: 800, height: 800 }}>
+              <div style={{ transform: `scale(${scale})`, transformOrigin: "top left", width: 800 }}>
                 <RoastCard
                   ref={cardRef}
                   personaName={personaName}

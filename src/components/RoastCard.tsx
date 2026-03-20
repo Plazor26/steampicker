@@ -38,7 +38,7 @@ const RoastCard = forwardRef<HTMLDivElement, RoastCardProps>(function RoastCard(
     <div
       ref={ref}
       style={{
-        width: 800, height: 800,
+        width: 800,
         background: "linear-gradient(145deg, #050a14 0%, #0c1929 40%, #0a1628 100%)",
         fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif",
         position: "relative", overflow: "hidden",
@@ -48,7 +48,7 @@ const RoastCard = forwardRef<HTMLDivElement, RoastCardProps>(function RoastCard(
       <div style={{ position: "absolute", top: -80, right: -60, width: 300, height: 300, borderRadius: "50%", background: `radial-gradient(circle, ${gc.bg} 0%, transparent 70%)` }} />
       <div style={{ position: "absolute", bottom: -60, left: -40, width: 250, height: 250, borderRadius: "50%", background: "radial-gradient(circle, rgba(59,130,246,0.06) 0%, transparent 70%)" }} />
 
-      <div style={{ position: "relative", zIndex: 10, padding: 40, display: "flex", flexDirection: "column", height: "100%", justifyContent: "space-between" }}>
+      <div style={{ position: "relative", zIndex: 10, padding: 40, display: "flex", flexDirection: "column", gap: 20 }}>
 
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
@@ -71,7 +71,7 @@ const RoastCard = forwardRef<HTMLDivElement, RoastCardProps>(function RoastCard(
 
         {/* Shame game */}
         {shameGame && (
-          <div style={{ marginTop: 20, borderRadius: 14, overflow: "hidden", border: "1px solid rgba(249,115,22,0.3)", position: "relative" }}>
+          <div style={{ marginTop: 0, borderRadius: 14, overflow: "hidden", border: "1px solid rgba(249,115,22,0.3)", position: "relative" }}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={shameGame.imageUrl} alt="" style={{ width: "100%", height: 160, objectFit: "cover", objectPosition: "top", opacity: 0.65 }} crossOrigin="anonymous" />
             <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top, rgba(5,10,20,0.95) 25%, rgba(5,10,20,0.3) 60%, transparent)" }} />
@@ -85,7 +85,7 @@ const RoastCard = forwardRef<HTMLDivElement, RoastCardProps>(function RoastCard(
 
         {/* Headline */}
         <div style={{
-          marginTop: 20,
+          marginTop: 0,
           background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
           borderRadius: 14, padding: "18px 22px",
           borderLeft: `3px solid ${gc.border}`,
