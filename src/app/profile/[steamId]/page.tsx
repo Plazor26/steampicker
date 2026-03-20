@@ -220,12 +220,22 @@ function RecCard({ game, currencyCode }: { game: any; currencyCode?: string }) {
     const code = game.currencyCode || currencyCode;
     if (!code) return null;
     try {
-      // Use en-IN for INR so it shows ₹ not $, etc.
       const locale = code === "INR" ? "en-IN" : code === "EUR" ? "de-DE" : code === "GBP" ? "en-GB" : code === "JPY" ? "ja-JP" : undefined;
       return new Intl.NumberFormat(locale, { style: "currency", currency: code }).format(cents / 100);
     } catch {}
     return null;
   };
+  const priceLabel = (() => {
+    if (game.is_free) return "Free to Play";
+    if (typeof game.price_cents === "number" && game.price_cents === 0) return "Free to Play";
+    if (typeof game.price_cents === "number" && game.price_cents > 0) return fmtPrice(game.price_cents) ?? "View on store";
+    return "View on store";
+  })();
+  const [imgErr, setImgErr] = React.useState(false);
+  const headerSrc = imgErr
+    ? `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${game.appid}/header.jpg`
+    : (game.header || `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${game.appid}/header.jpg`);
+
   return (
     <motion.a
       variants={fadeUp}
@@ -238,10 +248,11 @@ function RecCard({ game, currencyCode }: { game: any; currencyCode?: string }) {
       <div className="relative w-full aspect-[460/215] bg-black/40">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={game.header}
+          src={headerSrc}
           alt={game.name}
           className="w-full h-full object-cover opacity-85 group-hover:opacity-100 transition-opacity duration-200"
           loading="lazy"
+          onError={() => { if (!imgErr) setImgErr(true); }}
         />
         <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent" />
         <div className="absolute top-2 left-2 flex gap-1.5">
@@ -260,9 +271,7 @@ function RecCard({ game, currencyCode }: { game: any; currencyCode?: string }) {
       <div className="p-4">
         <div className="font-semibold text-sm text-white truncate mb-1">{game.name}</div>
         <div className="text-xs text-gray-500 flex items-center justify-between">
-          <span>
-            {typeof game.price_cents === "number" ? (fmtPrice(game.price_cents) ?? "View on store") : "View on store"}
-          </span>
+          <span className={priceLabel === "Free to Play" ? "text-green-400" : ""}>{priceLabel}</span>
           <FaExternalLinkAlt size={10} className="text-gray-600 group-hover:text-blue-400 transition-colors" />
         </div>
         {game.matchReasons?.length > 0 && (
@@ -543,14 +552,14 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
         let results = scoreAndRank(catalogItems as CandidateGame[], ownedAppIds, anchors.length, 30);
         if (!alive) return;
 
-        // 4. Fetch prices (one batch, proven to work) + fix missing names
+        // 4. Fetch prices via server proxy (Steam has no CORS)
         if (results.length > 0) {
-          // Price fetch via our server proxy (Steam has no CORS)
           try {
             const appidStr = results.map((r: any) => r.appid).join(",");
-            console.log("[RECS] Fetching prices for", results.length, "games via proxy");
-            // Fetch price + basic info (name, header_image, type) in one call
-            const priceRes = await fetch(`/api/steam/prices?appids=${appidStr}&cc=${cc || "US"}&filter=price_overview,basic`);
+            console.log("[RECS] Fetching prices for", results.length, "games");
+
+            // Step A: Batch price_overview (fast, works for 100+)
+            const priceRes = await fetch(`/api/steam/prices?appids=${appidStr}&cc=${cc || "US"}`);
             if (priceRes.ok) {
               const pj = await priceRes.json();
               if (pj.ok && pj.data) {
@@ -558,27 +567,54 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
                 results = results.map((r: any) => {
                   const entry = pj.data[String(r.appid)];
                   if (!entry?.success) return r;
-                  const d = entry.data || {};
-                  // Filter non-games
-                  if (d.type && d.type !== "game" && d.type !== "dlc") return null;
-                  const pov = d.price_overview;
+                  const pov = entry.data?.price_overview;
                   if (pov) priced++;
                   return {
                     ...r,
-                    name: (r.name?.startsWith("App ") && d.name) ? d.name : r.name,
-                    header: d.header_image || r.header,
                     price_cents: pov?.final ?? r.price_cents,
                     discount_pct: pov?.discount_percent ?? r.discount_pct,
                     currencyCode: pov?.currency ?? r.currencyCode,
                   };
-                }).filter(Boolean) as typeof results;
-                console.log("[RECS] Applied prices to", priced, "games, fixed headers/names");
+                });
+                console.log("[RECS] Prices applied:", priced, "/", results.length);
                 const curr = results.find((r: any) => r.currencyCode)?.currencyCode;
                 if (curr) setCatalogCurrency(curr);
               }
             }
-          } catch (e) { console.error("[RECS] Price fetch error:", e); }
 
+            // Step B: Fix missing names/headers/prices (individual detail calls)
+            // Includes games with no price (might be free) and games with placeholder names
+            const missing = results.filter((r: any) =>
+              r.name?.startsWith("App ") || !r.header || (typeof r.price_cents !== "number")
+            );
+            if (missing.length > 0 && missing.length <= 15) {
+              console.log("[RECS] Fetching details for", missing.length, "games with missing info");
+              const missingIds = missing.map((r: any) => r.appid).join(",");
+              const detailRes = await fetch(`/api/steam/prices?appids=${missingIds}&cc=${cc || "US"}&detail=1`);
+              if (detailRes.ok) {
+                const dj = await detailRes.json();
+                if (dj.ok && dj.data) {
+                  results = results.map((r: any) => {
+                    const entry = dj.data[String(r.appid)];
+                    if (!entry?.success) return r;
+                    const d = entry.data || {};
+                    if (d.type && d.type !== "game" && d.type !== "dlc") return null;
+                    const pov = d.price_overview;
+                    return {
+                      ...r,
+                      name: d.name || r.name,
+                      header: d.header_image || r.header,
+                      price_cents: pov?.final ?? (d.is_free ? 0 : r.price_cents),
+                      discount_pct: pov?.discount_percent ?? r.discount_pct,
+                      currencyCode: pov?.currency ?? r.currencyCode,
+                      is_free: d.is_free || r.is_free,
+                    };
+                  }).filter(Boolean) as typeof results;
+                  console.log("[RECS] Fixed", missing.length, "games with detail calls");
+                }
+              }
+            }
+          } catch (e) { console.error("[RECS] Price fetch error:", e); }
         }
 
         if (!alive) return;
