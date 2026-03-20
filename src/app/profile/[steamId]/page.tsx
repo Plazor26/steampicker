@@ -134,6 +134,7 @@ function normalizeCatalog(cat: any): Array<{
       reviewScore: typeof c.reviewScore === "number" ? c.reviewScore : undefined,
       similarTo: Array.isArray(c.similarTo) ? c.similarTo : undefined,
       steamSimilarCount: typeof c.steamSimilarCount === "number" ? c.steamSimilarCount : undefined,
+      genres: Array.isArray(c.genres) ? c.genres : undefined,
     };
   }).filter(Boolean) as any[];
 }
@@ -620,9 +621,9 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
         if (!alive) return;
         setRecs(results);
 
-        // Build sidebar from "Similar to X" reasons
+        // Build sidebar from genre/tag categories (not anchor names)
         const tags: Record<number, string[]> = {};
-        for (const r of results) tags[r.appid] = r.matchReasons || [];
+        for (const r of results) tags[r.appid] = (r as any).genres || [];
         setRecTags(tags);
       } catch (e: any) { if (!alive) return; setRecErr(e?.message || "Failed to build recommendations."); }
       finally { if (alive) setLoadingRecs(false); }
