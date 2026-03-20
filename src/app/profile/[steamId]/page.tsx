@@ -232,12 +232,11 @@ function RecCard({ game, currencyCode }: { game: any; currencyCode?: string }) {
     if (typeof game.price_cents === "number" && game.price_cents > 0) return fmtPrice(game.price_cents) ?? "View on store";
     return "View on store";
   })();
-  const [imgErr, setImgErr] = React.useState(0); // 0=primary, 1=akamai fallback, 2=broken
-  const headerSrc = imgErr === 2
-    ? null
-    : imgErr === 1
-    ? `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${game.appid}/header.jpg`
-    : (game.header || `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${game.appid}/header.jpg`);
+  const [resolvedHeader, setResolvedHeader] = React.useState<string | null>(null);
+  const [imgErr, setImgErr] = React.useState(0); // 0=primary, 1=akamai, 2=fetching from API, 3=failed
+  const headerSrc = resolvedHeader
+    || (imgErr === 1 ? `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${game.appid}/header.jpg`
+    : (game.header || `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${game.appid}/header.jpg`));
 
   return (
     <motion.a
@@ -248,21 +247,30 @@ function RecCard({ game, currencyCode }: { game: any; currencyCode?: string }) {
       className="group block rounded-2xl overflow-hidden border border-white/[0.08] bg-white/[0.03] backdrop-blur-sm hover:border-blue-500/30 hover:bg-white/[0.06] transition-all duration-200"
       whileHover={{ y: -3 }}
     >
-      <div className="relative w-full aspect-[460/215] bg-gradient-to-br from-gray-800/60 to-gray-900/60">
-        {headerSrc ? (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img
-            src={headerSrc}
-            alt={game.name}
-            className="w-full h-full object-cover opacity-85 group-hover:opacity-100 transition-opacity duration-200"
-            loading="lazy"
-            onError={() => setImgErr(prev => Math.min(prev + 1, 2))}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-gray-500 text-xs font-medium">
-            {game.name}
-          </div>
-        )}
+      <div className="relative w-full aspect-[460/215] bg-black/40">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={headerSrc}
+          alt={game.name}
+          className="w-full h-full object-cover opacity-85 group-hover:opacity-100 transition-opacity duration-200"
+          loading="lazy"
+          onError={() => {
+            setImgErr(prev => {
+              const next = prev + 1;
+              if (next === 2) {
+                // Both CDN URLs failed — resolve from Steam API
+                fetch(`/api/steam/prices?appids=${game.appid}&cc=US&detail=1`)
+                  .then(r => r.json())
+                  .then(j => {
+                    const h = j?.data?.[String(game.appid)]?.data?.header_image;
+                    if (h) setResolvedHeader(h);
+                  })
+                  .catch(() => {});
+              }
+              return next;
+            });
+          }}
+        />
         <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent" />
         <div className="absolute top-2 left-2 flex gap-1.5">
           {typeof game.score === "number" && (
