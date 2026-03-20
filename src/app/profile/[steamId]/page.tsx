@@ -970,6 +970,7 @@ export default function Page({ params }: { params: Promise<{ steamId: string }> 
           <RoastCardModal
             open={roastOpen}
             onClose={() => setRoastOpen(false)}
+            steamId={steamId}
             personaName={profile.personaName ?? "Unknown"}
             avatarUrl={profile.avatar}
             totalGames={lib.totalGames ?? 0}

@@ -12,6 +12,7 @@ type ShameGame = { appid: number; name: string; hours: number };
 type Props = {
   open: boolean;
   onClose: () => void;
+  steamId: string;
   personaName: string;
   avatarUrl: string | null;
   totalGames: number;
@@ -26,9 +27,10 @@ type Props = {
 };
 
 export default function RoastCardModal({
-  open, onClose, personaName, avatarUrl, totalGames, totalHours,
+  open, onClose, steamId, personaName, avatarUrl, totalGames, totalHours,
   neverPlayed, libraryValue, libraryValueNum, currencySymbol, topGames, recentGames, roast,
 }: Props) {
+  const shareUrl = `https://steampicker.plazor.xyz/roast/${steamId}`;
   const cardRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
@@ -117,15 +119,15 @@ export default function RoastCardModal({
       if (navigator.canShare?.({ files: [file] })) {
         await navigator.share({
           title: `${personaName}'s Steam Roast`,
-          text: `My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet yours at steampicker.plazor.xyz`,
+          text: `My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nCheck yours: ${shareUrl}`,
           files: [file],
         });
       } else {
         // Fallback: share without image
         await navigator.share({
           title: `${personaName}'s Steam Roast`,
-          text: `My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet yours at steampicker.plazor.xyz`,
-          url: "https://steampicker.plazor.xyz",
+          text: `My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nCheck yours: ${shareUrl}`,
+          url: shareUrl,
         });
       }
     } catch {}
@@ -245,11 +247,11 @@ export default function RoastCardModal({
 
               {/* Social share buttons — copy image to clipboard, then open share URL */}
               {[
-                { href: `https://twitter.com/intent/tweet?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet roasted at steampicker.plazor.xyz`)}`, icon: <FaTwitter size={14} />, label: "X", copyFirst: true },
-                { href: `https://api.whatsapp.com/send?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nGet yours: https://steampicker.plazor.xyz`)}`, icon: <FaWhatsapp size={14} />, label: "WhatsApp", copyFirst: true },
+                { href: `https://twitter.com/intent/tweet?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nCheck yours: ${shareUrl}`)}`, icon: <FaTwitter size={14} />, label: "X", copyFirst: true },
+                { href: `https://api.whatsapp.com/send?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade} (${roast.rating})\n\nCheck yours: ${shareUrl}`)}`, icon: <FaWhatsapp size={14} />, label: "WhatsApp", copyFirst: true },
                 { href: `https://www.instagram.com/`, icon: <FaInstagram size={14} />, label: "Instagram", copyFirst: true },
-                { href: `https://reddit.com/submit?title=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" (Grade: ${roast.grade})`)}&url=${encodeURIComponent("https://steampicker.plazor.xyz")}`, icon: <FaRedditAlien size={14} />, label: "Reddit", copyFirst: false },
-                { href: `https://bsky.app/intent/compose?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade}\n\nsteampicker.plazor.xyz`)}`, icon: <SiBluesky size={14} />, label: "Bsky", copyFirst: false },
+                { href: `https://reddit.com/submit?title=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" (Grade: ${roast.grade})`)}&url=${encodeURIComponent(shareUrl)}`, icon: <FaRedditAlien size={14} />, label: "Reddit", copyFirst: false },
+                { href: `https://bsky.app/intent/compose?text=${encodeURIComponent(`My Steam profile got roasted: "${roast.headline}" — Grade: ${roast.grade}\n\n${shareUrl}`)}`, icon: <SiBluesky size={14} />, label: "Bsky", copyFirst: false },
               ].map(({ href, icon, label, copyFirst }) => (
                 <button
                   key={label}
