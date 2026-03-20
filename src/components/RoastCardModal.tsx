@@ -55,43 +55,17 @@ export default function RoastCardModal({
   }, [open]);
 
   const capture = useCallback(async () => {
-    if (!cardRef.current) return null;
-    const html2canvas = (await import("html2canvas")).default;
-    // Clone into a detached container at EXACT 800x800 (no scale transform)
-    // to avoid proportion distortion from the modal's CSS scale.
-    const clone = cardRef.current.cloneNode(true) as HTMLElement;
-    // Force exact dimensions on the clone
-    clone.style.width = "800px";
-    clone.style.height = "800px";
-    clone.style.transform = "none";
-    clone.style.position = "absolute";
-
-    const container = document.createElement("div");
-    container.style.cssText = "position:fixed;left:-9999px;top:0;z-index:-1;width:800px;height:800px;overflow:hidden;";
-    container.appendChild(clone);
-    document.body.appendChild(container);
-
-    // Wait for any images to load in the clone
-    const imgs = clone.querySelectorAll("img");
-    await Promise.all([...imgs].map(img =>
-      img.complete ? Promise.resolve() : new Promise(r => { img.onload = r; img.onerror = r; })
-    ));
-
-    try {
-      return await html2canvas(clone, {
-        width: 800,
-        height: 800,
-        scale: 2, // 1600x1600 output for crisp quality
-        useCORS: true,
-        allowTaint: true,
-        backgroundColor: "#050a14",
-        // Don't let html2canvas read stylesheets (avoids lab() crash)
-        ignoreElements: (el) => el.tagName === "STYLE" || el.tagName === "LINK",
-      });
-    } finally {
-      document.body.removeChild(container);
-    }
-  }, []);
+    const { renderRoastCanvas } = await import("@/lib/roastCanvas");
+    const shameG = recentGames.find(g => g.appid === shameAppId) ?? null;
+    return renderRoastCanvas({
+      personaName, avatarUrl, totalGames, totalHours, neverPlayed,
+      libraryValue, libraryValueNum, currencySymbol, roast,
+      shameGame: shameG ? {
+        name: shameG.name, hours: shameG.hours,
+        imageUrl: `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${shameG.appid}/header.jpg`,
+      } : null,
+    });
+  }, [personaName, avatarUrl, totalGames, totalHours, neverPlayed, libraryValue, libraryValueNum, currencySymbol, roast, shameAppId, recentGames]);
 
   const handleDownload = useCallback(async () => {
     setSaving(true);
