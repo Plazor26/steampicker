@@ -1,5 +1,7 @@
 # SteamPicker
 
+![SteamPicker](public/Thumbnail.png)
+
 **Discover your next favorite game.** SteamPicker analyzes your Steam library and recommends games you'll actually play — powered by Steam's own collaborative filtering algorithm.
 
 **[steampicker.plazor.xyz](https://steampicker.plazor.xyz)**
